@@ -265,8 +265,8 @@ function BrowserCommentsComposer() {
           liveBatchRef.current = live.batchId;
           revisionRef.current = -1;
         }
-        if (live.revision > revisionRef.current) {
-          revisionRef.current = live.revision;
+        if (live.revision > revisionRef.current || live.annotations.length > 0) {
+          revisionRef.current = Math.max(revisionRef.current, live.revision);
           setAnnotations(live.annotations);
           if (live.annotations.length === 0) setOpen(false);
         } else if (!live.active) {

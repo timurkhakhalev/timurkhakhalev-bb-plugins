@@ -70,22 +70,13 @@ const liveAnnotationSchema = z
 
 /** server ↔ host (CDP execution on the desktop machine) */
 export const hostContract = {
-  annotateSession: {
+  startSession: {
     input: z
       .object({
         wsEndpoint: z.string().url(),
       })
       .strict(),
-    output: z
-      .object({
-        batch: batchSchema.nullable(),
-        screenshots: z
-          .array(z.object({ annotationId: idSchema, image: screenshotSchema }).strict())
-          .max(50),
-        cancelled: z.boolean(),
-        count: z.number().int(),
-      })
-      .strict(),
+    output: z.object({ started: z.literal(true) }).strict(),
   },
   readSession: {
     input: z
@@ -96,9 +87,14 @@ export const hostContract = {
       .strict(),
     output: z
       .object({
+        status: z.enum(["active", "sent", "cancelled"]),
         revision: z.number().int().min(0),
         batch: batchSchema.nullable(),
         preview: screenshotSchema.nullable(),
+        capture: z
+          .object({ annotationId: idSchema, image: screenshotSchema })
+          .strict()
+          .nullable(),
       })
       .strict(),
   },
@@ -112,6 +108,10 @@ export const hostContract = {
       })
       .strict(),
     output: z.object({ changed: z.boolean() }).strict(),
+  },
+  cleanupSession: {
+    input: z.object({ wsEndpoint: z.string().url() }).strict(),
+    output: z.object({ cleaned: z.literal(true) }).strict(),
   },
 } satisfies PluginRpcContract;
 

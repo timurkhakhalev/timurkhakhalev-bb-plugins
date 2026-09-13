@@ -8,12 +8,6 @@ import { batchSchema, hostContract } from "./contracts.js";
  * the whole picker is one self-contained script string, no build artifacts.
  */
 
-const delay = (ms: number) => {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-};
-
 const CONTROL_ENDED = "Browser control ended";
 
 const PAGE_SCRIPT = `
@@ -679,105 +673,104 @@ async function screenshot(
 export default experimental_defineHostEntry({
   contract: hostContract,
   handlers: {
-    /**
-     * Owns the tab for the whole annotate session: injects the overlay, then
-     * polls for Send/Cancel. A long-running handler is fine — the server holds
-     * one tab lease per session and aborts us on stop.
-     */
-    annotateSession: async (input, context) => {
+    startSession: async (input, context) => {
       return withPage(input.wsEndpoint, context.signal, async (connection, sessionId) => {
-        try {
-          const identityOf = () =>
-            evaluate(
-              connection,
-              sessionId,
-              "String(performance.timeOrigin) + '|' + location.href",
-            ) as Promise<string>;
-          const before = await identityOf();
-          await evaluate(
-            connection,
-            sessionId,
-            "window.__bbAnnotateDone = null; window.__bbAnnotateCount = 0; true",
-          );
-          await evaluate(connection, sessionId, PAGE_SCRIPT);
-
-          // The request traffic keeps the tab lease alive while the user works.
-          await connection.request("Page.enable", {}, sessionId).catch(() => undefined);
-          const screenshots = new Map<string, Awaited<ReturnType<typeof screenshot>>>();
-          const deadline = Date.now() + 25 * 60_000;
-          while (Date.now() < deadline) {
-            context.signal.throwIfAborted();
-            const capture = await evaluate(
-              connection,
-              sessionId,
-              "window.__bbAnnotateTakeCapture ? window.__bbAnnotateTakeCapture() : null",
-            );
-            if (
-              typeof capture === "object" &&
-              capture !== null &&
-              typeof (capture as { id?: unknown }).id === "string"
-            ) {
-              const annotationId = (capture as { id: string }).id;
-              screenshots.set(annotationId, await screenshot(connection, sessionId));
-              await evaluate(
-                connection,
-                sessionId,
-                `window.__bbAnnotateFinishCapture(${JSON.stringify(annotationId)})`,
-              );
-              continue;
-            }
-            const result = await evaluate(connection, sessionId, "window.__bbAnnotateDone || null");
-            if (result !== null && typeof result === "object") {
-              const done = result as { kind: string; batch: unknown };
-              if ((await identityOf()) !== before || done.kind === "cancel") {
-                return { batch: null, screenshots: [], cancelled: true, count: 0 };
-              }
-              const batch = batchSchema.parse(done.batch);
-              return {
-                batch,
-                screenshots: batch.annotations.flatMap((annotation) => {
-                  const image = screenshots.get(annotation.id);
-                  return image ? [{ annotationId: annotation.id, image }] : [];
-                }),
-                cancelled: false,
-                count: batch.annotations.length,
-              };
-            }
-            await delay(250);
-          }
-          return { batch: null, screenshots: [], cancelled: true, count: 0 };
-        } finally {
-          await evaluate(
-            connection,
-            sessionId,
-            "window.__bbAnnotateCleanup && window.__bbAnnotateCleanup(); true",
-          ).catch(() => undefined);
-        }
+        await evaluate(
+          connection,
+          sessionId,
+          "window.__bbAnnotateDone = null; window.__bbAnnotateCount = 0; true",
+        );
+        await evaluate(connection, sessionId, PAGE_SCRIPT);
+        return { started: true as const };
       });
     },
     readSession: async (input, context) => {
       return withPage(input.wsEndpoint, context.signal, async (connection, sessionId) => {
+        const doneRaw = await evaluate(connection, sessionId, "window.__bbAnnotateDone || null");
+        if (doneRaw !== null && typeof doneRaw === "object") {
+          const done = doneRaw as { kind?: unknown; batch?: unknown };
+          if (done.kind === "cancel") {
+            return {
+              status: "cancelled" as const,
+              revision: Math.max(0, input.afterRevision),
+              batch: null,
+              preview: null,
+              capture: null,
+            };
+          }
+          if (done.kind === "send") {
+            const batch = batchSchema.parse(done.batch);
+            return {
+              status: "sent" as const,
+              revision: Math.max(input.afterRevision + 1, 0),
+              batch,
+              preview: batch.annotations.length > 0
+                ? await screenshot(connection, sessionId)
+                : null,
+              capture: null,
+            };
+          }
+        }
         const raw = await evaluate(
           connection,
           sessionId,
           "window.__bbAnnotateRead ? window.__bbAnnotateRead() : null",
         );
         if (raw === null || typeof raw !== "object") {
-          return { revision: Math.max(0, input.afterRevision), batch: null, preview: null };
+          return {
+            status: "cancelled" as const,
+            revision: Math.max(0, input.afterRevision),
+            batch: null,
+            preview: null,
+            capture: null,
+          };
         }
         const value = z
           .object({ revision: z.number().int().min(0), batch: batchSchema })
           .parse(raw);
-        if (value.revision <= input.afterRevision) {
-          return { revision: value.revision, batch: null, preview: null };
+        if (value.revision > input.afterRevision) {
+          return {
+            status: "active" as const,
+            revision: value.revision,
+            batch: value.batch,
+            preview: null,
+            capture: null,
+          };
         }
-        await connection.request("Page.enable", {}, sessionId).catch(() => undefined);
+
+        const captureRaw = await evaluate(
+          connection,
+          sessionId,
+          "window.__bbAnnotateTakeCapture ? window.__bbAnnotateTakeCapture() : null",
+        );
+        if (
+          typeof captureRaw === "object" &&
+          captureRaw !== null &&
+          typeof (captureRaw as { id?: unknown }).id === "string"
+        ) {
+          const annotationId = (captureRaw as { id: string }).id;
+          await connection.request("Page.enable", {}, sessionId).catch(() => undefined);
+          const image = await screenshot(connection, sessionId);
+          await evaluate(
+            connection,
+            sessionId,
+            `window.__bbAnnotateFinishCapture(${JSON.stringify(annotationId)})`,
+          );
+          return {
+            status: "active" as const,
+            revision: value.revision,
+            batch: value.batch,
+            preview: image,
+            capture: { annotationId, image },
+          };
+        }
+
         return {
+          status: "active" as const,
           revision: value.revision,
-          batch: value.batch,
-          preview: value.batch.annotations.length > 0
-            ? await screenshot(connection, sessionId)
-            : null,
+          batch: null,
+          preview: null,
+          capture: null,
         };
       });
     },
@@ -791,6 +784,16 @@ export default experimental_defineHostEntry({
           ),
         ),
       }));
+    },
+    cleanupSession: async (input, context) => {
+      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId) => {
+        await evaluate(
+          connection,
+          sessionId,
+          "window.__bbAnnotateCleanup && window.__bbAnnotateCleanup(); true",
+        ).catch(() => undefined);
+        return { cleaned: true as const };
+      });
     },
   },
 });

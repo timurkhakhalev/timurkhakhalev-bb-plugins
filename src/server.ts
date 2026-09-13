@@ -25,6 +25,7 @@ type ActiveSession = {
   hostId: string;
   wsEndpoint: string | null;
   batchId: string;
+  screenshots: Map<string, Screenshot>;
 };
 
 const oneLine = (value: string) => value.replace(/\s+/g, " ").trim();
@@ -301,81 +302,28 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         hostId: scope.hostId,
         wsEndpoint: null,
         batchId: `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`,
+        screenshots: new Map(),
       };
       sessions.set(threadId, session);
       await bb.sdk.experimental_desktopBrowsers.revealTab({ ...scope, tabId });
 
       void withLease(scope, tabId, controller.signal, async (wsEndpoint) => {
-        session.wsEndpoint = wsEndpoint;
-        return host.call(
-          "annotateSession",
+        await host.call(
+          "startSession",
           { wsEndpoint },
           {
             hostId: scope.hostId,
             signal: controller.signal,
-            timeoutMs: 30 * 60_000,
+            timeoutMs: 15_000,
           },
         );
+        session.wsEndpoint = wsEndpoint;
+        if (!controller.signal.aborted) {
+          await new Promise<void>((resolve) => {
+            controller.signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
       })
-        .then(async (result) => {
-          if (result.cancelled || !result.batch) {
-            bb.realtime.publish("annotate-session", {
-              threadId,
-              tabId,
-              status: "cancelled",
-              count: 0,
-            });
-            return;
-          }
-          const images: Array<{ annotationId: string; path: string }> = [];
-          for (const screenshot of result.screenshots) {
-            try {
-              images.push({
-                annotationId: screenshot.annotationId,
-                path: await storeScreenshot(threadId, screenshot.annotationId, screenshot.image),
-              });
-            } catch (error) {
-              bb.log.warn(
-                `Could not store annotation screenshot: ${error instanceof Error ? error.message : String(error)}`,
-              );
-            }
-          }
-          const id = session.batchId;
-          pending.set(id, {
-            id,
-            threadId,
-            createdAt: Date.now(),
-            sent: false,
-            batch: result.batch,
-            images,
-            previewDataUrl: result.screenshots[0]
-              ? `data:${result.screenshots[0].image.mimeType};base64,${result.screenshots[0].image.base64}`
-              : null,
-          });
-          await persistBatch(pending.get(id)!).catch((error) => {
-            bb.log.warn(
-              `Could not persist annotation details: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          });
-          try {
-            await bb.sdk.threads.send({
-              threadId,
-              mode: "steer-if-active",
-              input: [buildBatchMentionInput(bb.pluginId, pending.get(id)!)],
-            });
-            pending.get(id)!.sent = true;
-            bb.realtime.publish("annotate-session", {
-              threadId,
-              tabId,
-              status: "sent",
-              count: result.count,
-              batchId: id,
-            });
-          } catch (error) {
-            pending.delete(id);
-            throw error;
-          }
-        })
         .catch((error: unknown) => {
           if (sessions.get(threadId)?.controller !== controller) return;
           const cancelled = controller.signal.aborted;
@@ -384,13 +332,15 @@ export default function browserAnnotate(bb: BbPluginApi): void {
               `Annotate session failed: ${error instanceof Error ? error.message : String(error)}`,
             );
           }
-          bb.realtime.publish("annotate-session", {
-            threadId,
-            tabId,
-            status: cancelled ? "cancelled" : "error",
-            count: 0,
-            ...(cancelled ? {} : { error: error instanceof Error ? error.message : String(error) }),
-          });
+          if (!cancelled) {
+            bb.realtime.publish("annotate-session", {
+              threadId,
+              tabId,
+              status: "error",
+              count: 0,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         })
         .finally(() => {
           if (sessions.get(threadId)?.controller === controller) {
@@ -404,7 +354,20 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     async stop({ threadId }) {
       const session = sessions.get(threadId);
       if (!session) return { cancelled: false };
+      if (session.wsEndpoint) {
+        await host.call(
+          "cleanupSession",
+          { wsEndpoint: session.wsEndpoint },
+          { hostId: session.hostId, timeoutMs: 15_000 },
+        ).catch(() => undefined);
+      }
       session.controller.abort();
+      bb.realtime.publish("annotate-session", {
+        threadId,
+        tabId: session.tabId,
+        status: "cancelled",
+        count: 0,
+      });
       return { cancelled: true };
     },
 
@@ -455,6 +418,89 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
           { hostId: session.hostId, timeoutMs: 15_000 },
         );
+      }
+      if (result.capture) {
+        session.screenshots.set(result.capture.annotationId, result.capture.image);
+      }
+      if (result.status === "cancelled") {
+        session.controller.abort();
+        bb.realtime.publish("annotate-session", {
+          threadId,
+          tabId: session.tabId,
+          status: "cancelled",
+          count: 0,
+        });
+        return {
+          active: false,
+          revision: result.revision,
+          batchId: null,
+          annotations: [],
+        };
+      }
+      if (result.status === "sent" && result.batch) {
+        const images: Array<{ annotationId: string; path: string }> = [];
+        for (const annotation of result.batch.annotations) {
+          const image = session.screenshots.get(annotation.id);
+          if (!image) continue;
+          try {
+            images.push({
+              annotationId: annotation.id,
+              path: await storeScreenshot(threadId, annotation.id, image),
+            });
+          } catch (error) {
+            bb.log.warn(
+              `Could not store annotation screenshot: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+        const item: PendingBatch = {
+          id: session.batchId,
+          threadId,
+          createdAt: Date.now(),
+          sent: false,
+          batch: result.batch,
+          images,
+          previewDataUrl: result.preview
+            ? `data:${result.preview.mimeType};base64,${result.preview.base64}`
+            : null,
+        };
+        pending.set(item.id, item);
+        await persistBatch(item).catch((error) => {
+          bb.log.warn(
+            `Could not persist annotation details: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+        try {
+          await bb.sdk.threads.send({
+            threadId,
+            mode: "steer-if-active",
+            input: [buildBatchMentionInput(bb.pluginId, item)],
+          });
+          item.sent = true;
+          bb.realtime.publish("annotate-session", {
+            threadId,
+            tabId: session.tabId,
+            status: "sent",
+            count: item.batch.annotations.length,
+            batchId: item.id,
+          });
+        } catch (error) {
+          pending.delete(item.id);
+          throw error;
+        } finally {
+          await host.call(
+            "cleanupSession",
+            { wsEndpoint: session.wsEndpoint },
+            { hostId: session.hostId, timeoutMs: 15_000 },
+          ).catch(() => undefined);
+          session.controller.abort();
+        }
+        return {
+          active: false,
+          revision: result.revision,
+          batchId: null,
+          annotations: [],
+        };
       }
       if (!result.batch) {
         return {
