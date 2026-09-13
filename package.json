@@ -42,7 +42,7 @@
   },
   "bb": {
     "name": "Browser Annotate",
-    "description": "Annotate elements in a BB Browser tab and attach the comments with per-element screenshots to the next chat message.",
+    "description": "Annotate elements in a BB Browser tab and send the comments with per-element screenshots to the current chat.",
     "branding": {
       "icon": "MessageSquare"
     },

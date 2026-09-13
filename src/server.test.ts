@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { batchSchema, screenshotSchema } from "./contracts.js";
-import { renderBatch } from "./server.js";
+import { buildBatchMentionInput, renderBatch } from "./server.js";
 
 const batch = batchSchema.parse({
   url: "https://example.com/products",
@@ -58,5 +58,33 @@ describe("browser annotation payload", () => {
         annotations: [{ ...batch.annotations[0], comment: "   " }],
       }),
     ).toThrow();
+  });
+
+  it("builds one resolvable mention for direct thread send", () => {
+    expect(
+      buildBatchMentionInput("browser-annotate", {
+        id: "batch_1",
+        threadId: "thread_1",
+        createdAt: 1,
+        batch,
+        images: [],
+        previewDataUrl: null,
+      }),
+    ).toEqual({
+      type: "text",
+      text: "1 annotation",
+      mentions: [
+        {
+          start: 0,
+          end: 12,
+          resource: {
+            kind: "plugin",
+            pluginId: "browser-annotate",
+            itemId: "browser-comments:batch_1",
+            label: "1 annotation",
+          },
+        },
+      ],
+    });
   });
 });

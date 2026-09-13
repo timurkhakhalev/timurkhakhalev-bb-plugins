@@ -13,7 +13,6 @@ type PendingBatch = {
   id: string;
   threadId: string;
   createdAt: number;
-  staged: boolean;
   batch: Batch;
   images: Array<{ annotationId: string; path: string }>;
   previewDataUrl: string | null;
@@ -70,6 +69,27 @@ export function renderBatch(batch: Batch): string {
     lines.push("");
   });
   return lines.join("\n");
+}
+
+export function buildBatchMentionInput(pluginId: string, item: PendingBatch) {
+  const count = item.batch.annotations.length;
+  const label = `${count} annotation${count === 1 ? "" : "s"}`;
+  return {
+    type: "text" as const,
+    text: label,
+    mentions: [
+      {
+        start: 0,
+        end: label.length,
+        resource: {
+          kind: "plugin" as const,
+          pluginId,
+          itemId: `browser-comments:${item.id}`,
+          label,
+        },
+      },
+    ],
+  };
 }
 
 export default function browserAnnotate(bb: BbPluginApi): void {
@@ -257,20 +277,30 @@ export default function browserAnnotate(bb: BbPluginApi): void {
             id,
             threadId,
             createdAt: Date.now(),
-            staged: false,
             batch: result.batch,
             images,
             previewDataUrl: result.screenshots[0]
               ? `data:${result.screenshots[0].image.mimeType};base64,${result.screenshots[0].image.base64}`
               : null,
           });
-          bb.realtime.publish("annotate-session", {
-            threadId,
-            tabId,
-            status: "ready",
-            count: result.count,
-            batchId: id,
-          });
+          try {
+            await bb.sdk.threads.send({
+              threadId,
+              mode: "steer-if-active",
+              input: [buildBatchMentionInput(bb.pluginId, pending.get(id)!)],
+            });
+            pending.delete(id);
+            bb.realtime.publish("annotate-session", {
+              threadId,
+              tabId,
+              status: "sent",
+              count: result.count,
+              batchId: id,
+            });
+          } catch (error) {
+            pending.delete(id);
+            throw error;
+          }
         })
         .catch((error: unknown) => {
           if (sessions.get(threadId)?.controller !== controller) return;
@@ -313,7 +343,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       prunePending();
       return {
         batches: [...pending.values()]
-          .filter((item) => item.threadId === threadId && !item.staged)
+          .filter((item) => item.threadId === threadId)
           .map((item) => ({
             id: item.id,
             threadId: item.threadId,
@@ -326,7 +356,6 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     async stage({ threadId, batchId }) {
       const item = pending.get(batchId);
       if (!item || item.threadId !== threadId) return { staged: false };
-      item.staged = true;
       return { staged: true };
     },
 
@@ -340,11 +369,18 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           annotations: [],
         };
       }
-      const result = await host.call(
+      let result = await host.call(
         "readSession",
         { wsEndpoint: session.wsEndpoint, afterRevision },
         { hostId: session.hostId, timeoutMs: 15_000 },
       );
+      if (!result.batch && result.revision < afterRevision) {
+        result = await host.call(
+          "readSession",
+          { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
+          { hostId: session.hostId, timeoutMs: 15_000 },
+        );
+      }
       if (!result.batch) {
         return {
           active: true,
