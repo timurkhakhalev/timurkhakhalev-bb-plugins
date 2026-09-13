@@ -145,10 +145,6 @@ const PAGE_SCRIPT = `
     const value = fullTextValueFor(element);
     return value === null ? null : value.trim().slice(0, 4000);
   };
-  const setDirectText = (element, value) => {
-    const node = directTextNode(element);
-    if (node) node.nodeValue = value;
-  };
   const resolveElement = (item) => {
     if (item.element && item.element.isConnected) return item.element;
     try {
@@ -159,21 +155,27 @@ const PAGE_SCRIPT = `
       return null;
     }
   };
+  const setTrackedText = (item, value) => {
+    let node = item.textNode;
+    if (!node || !node.isConnected) {
+      const element = resolveElement(item);
+      node = element ? directTextNode(element) : null;
+      item.textNode = node;
+    }
+    if (node) node.nodeValue = value;
+  };
   const activeSources = () => {
     const saved = state.items.filter((item) => !formAnnotation || item.id !== formAnnotation.id);
     return formDraft ? [...saved, formDraft] : saved;
   };
   const restoreDesignText = (item) => {
     if (!item || !item.designChange || !item.designChange.text) return;
-    const element = resolveElement(item);
-    if (element) {
-      setDirectText(
-        element,
-        typeof item.rollbackText === "string"
-          ? item.rollbackText
-          : item.designChange.text.previousValue,
-      );
-    }
+    setTrackedText(
+      item,
+      typeof item.rollbackText === "string"
+        ? item.rollbackText
+        : item.designChange.text.previousValue,
+    );
   };
   const renderDesignPreview = () => {
     if (!designStyle.isConnected) return;
@@ -211,7 +213,7 @@ const PAGE_SCRIPT = `
         }
       }
       if (design.text && design.text.value !== design.text.previousValue) {
-        setDirectText(element, design.text.value);
+        setTrackedText(item, design.text.value);
       }
     }
     previewGuardTimer = window.setTimeout(() => { applyingPreview = false; }, 0);
@@ -232,6 +234,7 @@ const PAGE_SCRIPT = `
     return {
       id,
       element,
+      textNode: directTextNode(element),
       selector: annotation ? annotation.selector : selectorFor(element),
       rollbackText: annotation && typeof annotation.rollbackText === "string"
         ? annotation.rollbackText
@@ -518,6 +521,7 @@ const PAGE_SCRIPT = `
     item.comment = trustedComment;
     item.designChange = designChange || null;
     item.rollbackText = formDraft.rollbackText;
+    item.textNode = formDraft.textNode;
     const rect = formTarget.getBoundingClientRect();
     item.snapshotRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     item.nodePosition = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -673,6 +677,7 @@ const PAGE_SCRIPT = `
         ...annotation,
         seq: index + 1,
         element,
+        textNode: element ? directTextNode(element) : null,
         rollbackText: element ? fullTextValueFor(element) : null,
         snapshotRect: rect,
         clientX: rect.x + Math.min(18, Math.max(8, rect.width / 2)),
