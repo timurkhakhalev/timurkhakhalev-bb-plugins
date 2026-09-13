@@ -103,8 +103,7 @@ export const hostContract = {
       .object({
         wsEndpoint: z.string().url(),
         annotationId: idSchema,
-        action: z.enum(["delete", "edit"]),
-        comment: z.string().trim().min(1).max(4000).optional(),
+        action: z.enum(["delete", "open"]),
       })
       .strict(),
     output: z.object({ changed: z.boolean() }).strict(),
@@ -176,8 +175,7 @@ export const rpcContract = {
       .object({
         threadId: idSchema,
         annotationId: idSchema,
-        action: z.enum(["delete", "edit"]),
-        comment: z.string().trim().min(1).max(4000).optional(),
+        action: z.enum(["delete", "open"]),
       })
       .strict(),
     output: z.object({ changed: z.boolean() }).strict(),

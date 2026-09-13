@@ -23,6 +23,7 @@ type ActiveSession = {
   controller: AbortController;
   tabId: string;
   hostId: string;
+  scope: BrowserScope;
   wsEndpoint: string | null;
   batchId: string;
   screenshots: Map<string, Screenshot>;
@@ -300,6 +301,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         controller,
         tabId,
         hostId: scope.hostId,
+        scope,
         wsEndpoint: null,
         batchId: `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`,
         screenshots: new Map(),
@@ -527,16 +529,21 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       };
     },
 
-    async mutate({ threadId, annotationId, action, comment }) {
+    async mutate({ threadId, annotationId, action }) {
       const session = sessions.get(threadId);
       if (session?.wsEndpoint) {
+        if (action === "open") {
+          await bb.sdk.experimental_desktopBrowsers.revealTab({
+            ...session.scope,
+            tabId: session.tabId,
+          });
+        }
         return host.call(
           "mutateSession",
           {
             wsEndpoint: session.wsEndpoint,
             annotationId,
             action,
-            ...(comment === undefined ? {} : { comment }),
           },
           { hostId: session.hostId, timeoutMs: 15_000 },
         );
@@ -548,15 +555,12 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           candidate.batch.annotations.some((annotation) => annotation.id === annotationId),
       );
       if (!item) return { changed: false };
+      if (action === "open") return { changed: false };
       if (action === "delete") {
         item.batch.annotations = item.batch.annotations.filter(
           (annotation) => annotation.id !== annotationId,
         );
         item.images = item.images.filter((image) => image.annotationId !== annotationId);
-      } else if (comment) {
-        item.batch.annotations = item.batch.annotations.map((annotation) =>
-          annotation.id === annotationId ? { ...annotation, comment } : annotation,
-        );
       } else {
         return { changed: false };
       }

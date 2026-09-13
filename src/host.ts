@@ -420,13 +420,15 @@ const PAGE_SCRIPT = `
   });
 
   window.__bbAnnotateRead = () => ({ revision: state.revision, batch: serializedBatch() });
-  window.__bbAnnotateMutate = (annotationId, action, comment) => {
+  window.__bbAnnotateMutate = (annotationId, action) => {
     const item = state.items.find((candidate) => candidate.id === annotationId);
     if (!item) return false;
-    if (action === "edit") {
-      const next = String(comment || "").trim();
-      if (!next) return false;
-      item.comment = next.slice(0, 4000);
+    if (action === "open") {
+      hideHover();
+      const element = item.element && item.element.isConnected ? item.element : null;
+      if (element) element.scrollIntoView({ block: "center", inline: "nearest" });
+      openForm(element, item);
+      return true;
     } else if (action === "delete") {
       state.items = state.items.filter((candidate) => candidate.id !== annotationId);
       dropPin(annotationId);
@@ -780,7 +782,7 @@ export default experimental_defineHostEntry({
           await evaluate(
             connection,
             sessionId,
-            `window.__bbAnnotateMutate ? window.__bbAnnotateMutate(${JSON.stringify(input.annotationId)}, ${JSON.stringify(input.action)}, ${JSON.stringify(input.comment ?? null)}) : false`,
+            `window.__bbAnnotateMutate ? window.__bbAnnotateMutate(${JSON.stringify(input.annotationId)}, ${JSON.stringify(input.action)}) : false`,
           ),
         ),
       }));

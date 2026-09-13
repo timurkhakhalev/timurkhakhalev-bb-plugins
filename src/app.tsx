@@ -236,8 +236,6 @@ function BrowserCommentsComposer() {
   const closeTimerRef = useRef<number | null>(null);
   const [annotations, setAnnotations] = useState<LiveAnnotation[]>([]);
   const [open, setOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingComment, setEditingComment] = useState("");
   const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({});
   const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
 
@@ -346,30 +344,21 @@ function BrowserCommentsComposer() {
       if (!changed.changed) return;
       const next = annotations.filter((annotation) => annotation.id !== annotationId);
       setAnnotations(next);
-      setEditingId(null);
       if (next.length === 0) setOpen(false);
     },
     [annotations, composer.scope, rpc],
   );
 
-  const saveEdit = useCallback(async () => {
-    if (composer.scope.kind !== "thread" || !editingId || !editingComment.trim()) return;
+  const openAnnotationEditor = useCallback(async (annotationId: string) => {
+    if (composer.scope.kind !== "thread") return;
     const changed = await rpc.call("mutate", {
       threadId: composer.scope.threadId,
-      annotationId: editingId,
-      action: "edit",
-      comment: editingComment.trim(),
+      annotationId,
+      action: "open",
     });
     if (!changed.changed) return;
-    setAnnotations((current) =>
-      current.map((annotation) =>
-        annotation.id === editingId
-          ? { ...annotation, comment: editingComment.trim() }
-          : annotation,
-      ),
-    );
-    setEditingId(null);
-  }, [composer.scope, editingComment, editingId, rpc]);
+    setOpen(false);
+  }, [composer.scope, rpc]);
 
   const discard = useCallback(async () => {
     if (composer.scope.kind !== "thread") return;
@@ -441,10 +430,7 @@ function BrowserCommentsComposer() {
                       type="button"
                       className="px-1.5 text-muted-foreground hover:text-foreground"
                       aria-label={`Edit annotation ${index + 1}`}
-                      onClick={() => {
-                        setEditingId(annotation.id);
-                        setEditingComment(annotation.comment);
-                      }}
+                      onClick={() => void openAnnotationEditor(annotation.id)}
                     >
                       <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4">
                         <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
@@ -461,25 +447,7 @@ function BrowserCommentsComposer() {
                       </svg>
                     </button>
                   </div>
-                  {editingId === annotation.id ? (
-                    <div className="mt-2 flex gap-2">
-                      <input
-                        autoFocus
-                        value={editingComment}
-                        className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 outline-none focus:ring-1 focus:ring-ring"
-                        onChange={(event) => setEditingComment(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") void saveEdit();
-                          if (event.key === "Escape") setEditingId(null);
-                        }}
-                      />
-                      <button type="button" className="rounded-md bg-primary px-2 text-primary-foreground" onClick={() => void saveEdit()}>
-                        Save
-                      </button>
-                    </div>
-                  ) : (
-                    <p className="mt-2 whitespace-pre-wrap text-sm">{annotation.comment}</p>
-                  )}
+                  <p className="mt-2 whitespace-pre-wrap text-sm">{annotation.comment}</p>
                 </div>
               ))}
             </div>,
