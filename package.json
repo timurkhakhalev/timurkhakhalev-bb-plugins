@@ -5,6 +5,7 @@
   "scripts": {
     "build": "bb plugin build",
     "check": "tsc --noEmit && tsc --project tsconfig.test.json --noEmit && bun test",
+    "check:published-sdk": "bun scripts/check-published-sdk.mjs && tsc --project tsconfig.published-sdk.json --noEmit",
     "test": "bun test",
     "typecheck:test": "tsc --project tsconfig.test.json --noEmit"
   },

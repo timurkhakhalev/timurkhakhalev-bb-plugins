@@ -75,4 +75,4 @@ bun run check
 bb plugin build
 ```
 
-До публикации соответствующей версии SDK плагин использует vendored declarations в `types/` и требует companion-изменения из `bb/`.
+До публикации соответствующей версии SDK плагин использует vendored declarations в `types/` и требует companion-изменения из `bb/`. `bun run check:published-sdk` — отдельный release gate: он проверяет реальный установленный npm SDK без path mapping и сейчас ожидаемо блокируется, пока companion-изменения не выйдут в новой версии `@get-bb/plugin-sdk`. После публикации выполните `bb plugin migrate --yes`, затем этот gate и `bb plugin build`.

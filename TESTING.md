@@ -29,4 +29,27 @@ The suite has no expected failures for the currently covered issues:
 
 Issue #1 is intentionally a release gate rather than a fake green test: published SDK and companion BB compatibility must be verified after the required API is released.
 
+## Published SDK gate
+
+`bun run check` uses the checked-in `types/` declarations so the local companion
+surface can be tested before publication. It is not proof that the npm package
+can compile the plugin. `bun run check:published-sdk` ignores that path map,
+checks the installed `@get-bb/plugin-sdk` declarations for every browser/host
+surface used here, and then typechecks against the package directly.
+
+As of 2026-09-14, the npm registry's latest SDK is `0.4.88` (`gitHead`
+`cf51227e1135309a3c9c0baf5630be1ca7ba2714`). The gate fails because that package
+does not declare `experimental_images` or
+`experimental_browserToolbarAction`. The companion source at commit
+`6855ecfb6` contains both changes, but its package version is still `0.4.88`
+and it has not been published. `bb plugin types --check` only proves that the
+vendored declarations match that local companion source; it does not check npm.
+
+The source-level runtime baseline is the companion change at `6855ecfb6`
+(`bb-app` package `0.43.1` and SDK package `0.4.88`). No honest higher SDK
+semver floor can be recorded until that source is released under a new
+published version. After publication, run `bb plugin migrate --yes`, install
+the published SDK, then require both `bun run check:published-sdk` and
+`bb plugin build` to pass.
+
 Fidelity limits: screenshots are deterministic CDP stubs, layout metrics are JSDOM values, and the fixture does not emulate Electron, real daemon worker scheduling, real browser navigation, or published-SDK packaging. Those checks remain required before release.
