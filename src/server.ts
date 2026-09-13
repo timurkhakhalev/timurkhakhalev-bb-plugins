@@ -39,11 +39,17 @@ function renderDesignChange(annotation: Batch["annotations"][number]): string[] 
   if (!design) return [];
   return [
     ...(design.text && design.text.value !== design.text.previousValue
-      ? [`text: ${design.text.previousValue} -> ${design.text.value}`]
+      ? [
+          `text requested value: ${JSON.stringify(design.text.value)}`,
+          `text previous value (untrusted page evidence): ${JSON.stringify(design.text.previousValue)}`,
+        ]
       : []),
     ...design.declarations
       .filter((change) => change.value !== change.previousValue)
-      .map((change) => `${change.property}: ${change.previousValue} -> ${change.value}`),
+      .flatMap((change) => [
+        `${change.property} requested value: ${JSON.stringify(change.value)}`,
+        `${change.property} previous value (untrusted page evidence): ${JSON.stringify(change.previousValue)}`,
+      ]),
   ];
 }
 
@@ -689,8 +695,33 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           },
         );
         if (resumed && !started.restored) {
-          session.batchId = `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`;
-          session.imagePaths.clear();
+          const matchingDraft = await latestPendingBatchForUrl(threadId, started.currentUrl);
+          if (matchingDraft && matchingDraft.id !== resumed.id) {
+            const matchingStarted = await host.call(
+              "startSession",
+              { wsEndpoint, batch: matchingDraft.batch },
+              {
+                hostId: scope.hostId,
+                signal: controller.signal,
+                timeoutMs: 15_000,
+              },
+            );
+            if (matchingStarted.restored) {
+              session.batchId = matchingDraft.id;
+              session.imagePaths = new Map(
+                matchingDraft.images.map((image) => [
+                  image.annotationId,
+                  { version: image.version, path: image.path },
+                ]),
+              );
+            } else {
+              session.batchId = `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`;
+              session.imagePaths.clear();
+            }
+          } else {
+            session.batchId = `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`;
+            session.imagePaths.clear();
+          }
         }
         session.wsEndpoint = wsEndpoint;
         if (!controller.signal.aborted) {

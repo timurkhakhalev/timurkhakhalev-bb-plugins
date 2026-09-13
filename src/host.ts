@@ -139,7 +139,7 @@ const PAGE_SCRIPT = `
   };
   const textValueFor = (element) => {
     const node = directTextNode(element);
-    return node ? (node.nodeValue || "").trim() : null;
+    return node ? (node.nodeValue || "").trim().slice(0, 4000) : null;
   };
   const setDirectText = (element, value) => {
     const node = directTextNode(element);
@@ -227,7 +227,7 @@ const PAGE_SCRIPT = `
         text,
         declarations: properties.map((property) => {
           const change = savedDeclarations.get(property);
-          const current = computed.getPropertyValue(property).trim();
+          const current = computed.getPropertyValue(property).trim().slice(0, 1000);
           return change ? { ...change } : { property, previousValue: current, value: current };
         }),
       },
@@ -588,8 +588,7 @@ const PAGE_SCRIPT = `
       hideHover();
       const element = item.element && item.element.isConnected ? item.element : null;
       if (element) element.scrollIntoView({ block: "center", inline: "nearest" });
-      openTrustedEditor(element, item);
-      return true;
+      return openTrustedEditor(element, item);
     } else if (action === "delete") {
       removeItem(item);
       if (formAnnotation && formAnnotation.id === item.id) hideForm();
