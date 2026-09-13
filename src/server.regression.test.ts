@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { createServerHarness, disposeServerHarnesses, makeAnnotation, makeBatch, makeScreenshot, TEST_TAB_ID, TEST_THREAD_ID, TEST_URL } from "./test-support.js";
 import browserAnnotate from "./server.js";
 
@@ -272,7 +273,7 @@ describe("server browser annotation workflow", () => {
     expect(harness.releasedLeases).toEqual(harness.leases);
   });
 
-  test.failing("#2 downstream send failure retains an unsent draft for retry", async () => {
+  test("#2 downstream send failure retains an unsent draft for retry", async () => {
     const harness = createServerHarness();
     await startServer(harness);
     await harness.harness.callRpc("live", { threadId: TEST_THREAD_ID, afterRevision: -1 });
@@ -290,6 +291,57 @@ describe("server browser annotation workflow", () => {
     };
     expect(pending.batches).toHaveLength(1);
     expect(pending.batches[0].count).toBe(1);
+  });
+
+  test("#2 accepted composer mention marks the draft sent after persistence", async () => {
+    const harness = createServerHarness();
+    await startServer(harness);
+    await harness.harness.callRpc("live", { threadId: TEST_THREAD_ID, afterRevision: -1 });
+    const draft = await harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID }) as {
+      batches: Array<{ id: string }>;
+    };
+    const batchId = draft.batches[0].id;
+    const provider = harness.harness.registrations.mentionProviders[0];
+    await provider.resolve(batchId);
+    expect(await harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID })).toMatchObject({
+      batches: [{ id: batchId }],
+    });
+
+    harness.harness.sdk.stub("threads.events.list", async () => [{
+      id: "request-test",
+      scope: { threadId: TEST_THREAD_ID, turnId: null },
+      threadId: TEST_THREAD_ID,
+      seq: 7,
+      type: "client/turn/requested",
+      data: {
+        input: [{
+          type: "text",
+          text: "1 annotation",
+          mentions: [{
+            start: 0,
+            end: 13,
+            resource: {
+              kind: "plugin",
+              pluginId: "browser-annotate",
+              itemId: `browser-comments:${batchId}`,
+              label: "1 annotation",
+            },
+          }],
+        }],
+      },
+      createdAt: Date.now(),
+    }]);
+    await harness.harness.emitThreadEvent("experimental_thread.events", {
+      thread: makeThreadResponse({ id: TEST_THREAD_ID }),
+      sequence: 7,
+    });
+
+    await expect(
+      harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID }),
+    ).resolves.toEqual({ batches: [] });
+    expect(harness.files.get(
+      `${harness.location.storageRootPath}/browser-comments/${batchId}.json`,
+    )?.content).toContain('"sent":true');
   });
 
   test("#6 discarded batches stay discarded after a plugin restart", async () => {

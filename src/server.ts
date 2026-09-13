@@ -368,6 +368,23 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     }
   }
 
+  async function markBatchSent(item: PendingBatch): Promise<void> {
+    if (item.sent) return;
+    item.sent = true;
+    try {
+      await persistBatch(item);
+    } catch (error) {
+      item.sent = false;
+      pending.set(item.id, item);
+      try {
+        await persistBatch(item);
+      } catch {
+        pending.set(item.id, item);
+      }
+      throw error;
+    }
+  }
+
   async function removePersistedBatch(item: PendingBatch): Promise<void> {
     if (!isSafeBatchId(item.id)) {
       throw new Error("Refusing to remove a browser annotation batch with an invalid id");
@@ -572,6 +589,89 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     }
   }
 
+  function mentionBatchIds(input: unknown): string[] {
+    if (!Array.isArray(input)) return [];
+    const ids = new Set<string>();
+    for (const part of input) {
+      if (typeof part !== "object" || part === null) continue;
+      const mentions = (part as { mentions?: unknown }).mentions;
+      if (!Array.isArray(mentions)) continue;
+      for (const mention of mentions) {
+        if (typeof mention !== "object" || mention === null) continue;
+        const resource = (mention as { resource?: unknown }).resource;
+        if (typeof resource !== "object" || resource === null) continue;
+        const candidate = resource as {
+          kind?: unknown;
+          pluginId?: unknown;
+          itemId?: unknown;
+        };
+        if (
+          candidate.kind !== "plugin" ||
+          candidate.pluginId !== bb.pluginId ||
+          typeof candidate.itemId !== "string" ||
+          !candidate.itemId.startsWith("browser-comments:")
+        ) continue;
+        const id = candidate.itemId.slice("browser-comments:".length);
+        if (isSafeBatchId(id)) ids.add(id);
+      }
+    }
+    return [...ids];
+  }
+
+  const acceptedEventSequences = new Map<string, number>();
+  const acceptedEventScans = new Map<string, Promise<void>>();
+
+  async function scanAcceptedMessages(
+    threadId: string,
+    sequence: number,
+  ): Promise<void> {
+    const previousSequence = acceptedEventSequences.get(threadId) ?? 0;
+    if (!Number.isSafeInteger(sequence) || sequence <= previousSequence) return;
+    let afterSequence = previousSequence;
+    while (afterSequence < sequence) {
+      const rows = await bb.sdk.threads.events.list({
+        threadId,
+        afterSeq: String(afterSequence),
+        order: "asc",
+        types: ["client/turn/requested"],
+      });
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        if (row.type !== "client/turn/requested") continue;
+        for (const batchId of mentionBatchIds(row.data.input)) {
+          const item = await loadBatch(batchId, threadId);
+          if (!item || item.sent) continue;
+          await markBatchSent(item);
+          const session = sessions.get(threadId);
+          if (session?.batchId === item.id) void finishSession(session, item);
+        }
+      }
+      const lastSequence = rows.at(-1)?.seq;
+      if (
+        typeof lastSequence !== "number" ||
+        !Number.isSafeInteger(lastSequence) ||
+        lastSequence <= afterSequence
+      ) break;
+      afterSequence = lastSequence;
+    }
+    acceptedEventSequences.set(threadId, Math.max(sequence, afterSequence));
+  }
+
+  function queueAcceptedMessageScan(threadId: string, sequence: number): Promise<void> {
+    const previous = acceptedEventScans.get(threadId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => scanAcceptedMessages(threadId, sequence));
+    acceptedEventScans.set(threadId, next);
+    return next.finally(() => {
+      if (acceptedEventScans.get(threadId) === next) acceptedEventScans.delete(threadId);
+    });
+  }
+
+  bb.events.on("experimental_thread.events", ({ thread, sequence }) =>
+    queueAcceptedMessageScan(thread.id, sequence),
+  );
+
   async function pendingSummaries(threadId: string) {
     await loadPendingBatches(threadId);
     return [...pending.values()]
@@ -723,10 +823,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       mode: "steer-if-active",
       input: [buildBatchMentionInput(bb.pluginId, item)],
     });
-    if (!item.sent) {
-      item.sent = true;
-      await persistBatch(item);
-    }
+    await markBatchSent(item);
     await finishSession(session, item);
     return item;
   }
@@ -887,9 +984,6 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           ];
         }),
       };
-      item.sent = true;
-      await persistBatch(item);
-      if (session?.batchId === item.id) void finishSession(session, item);
       return resolved;
     },
   });
