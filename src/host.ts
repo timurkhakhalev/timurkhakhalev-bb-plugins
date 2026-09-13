@@ -89,10 +89,15 @@ const PAGE_SCRIPT = `
     }
     return path.join(" > ");
   };
+  const safeSelectorFor = (element) => {
+    const selector = selectorFor(element);
+    return selector.length <= 2000 ? selector : "";
+  };
+  const descriptiveTagFor = (element) => element.tagName.toLowerCase().slice(0, 64);
 
   const roleFor = (element) => {
     const explicit = element.getAttribute("role");
-    if (explicit) return explicit;
+    if (explicit) return explicit.slice(0, 128);
     const tag = element.tagName.toLowerCase();
     if (tag === "a" && element.hasAttribute("href")) return "link";
     if (tag === "button") return "button";
@@ -406,11 +411,11 @@ const PAGE_SCRIPT = `
       .filter((node) => node.nodeType === Node.TEXT_NODE)
       .map((node) => node.textContent || "")
       .join(" ")
-      .replace(/\s+/g, " ")
+      .replace(/\\s+/g, " ")
       .trim()
       .slice(0, 2000) || null;
     const fullText = (element.innerText || element.textContent || "")
-      .replace(/\s+/g, " ")
+      .replace(/\\s+/g, " ")
       .trim();
     const target = (
       element.getAttribute("aria-label") ||
@@ -422,7 +427,10 @@ const PAGE_SCRIPT = `
     ).slice(0, 1000);
     const metadata = {};
     for (const attribute of Array.from(element.attributes).slice(0, 30)) {
-      metadata[attribute.name] = attribute.value.slice(0, 1000);
+      const key = attribute.name.slice(0, 256);
+      if (key && !Object.prototype.hasOwnProperty.call(metadata, key)) {
+        metadata[key] = attribute.value.slice(0, 1000);
+      }
     }
     return {
       id: "ann_" + Date.now().toString(36) + "_" + (++state.seq),
@@ -431,15 +439,15 @@ const PAGE_SCRIPT = `
       kind: "element",
       comment: "",
       designChange: null,
-      selector: selectorFor(element),
-      tag: element.tagName.toLowerCase(),
-      classes: element.className && typeof element.className === "string" ? element.className : null,
+      selector: safeSelectorFor(element),
+      tag: descriptiveTagFor(element),
+      classes: element.className && typeof element.className === "string" ? element.className.slice(0, 2000) : null,
       text: fullText.slice(0, 4000) || null,
       target,
       targetRole: roleFor(element),
-      targetPath: selectorFor(element),
+      targetPath: safeSelectorFor(element),
       immediateText: directText,
-      nearbyText: ((element.parentElement && (element.parentElement.innerText || element.parentElement.textContent)) || fullText).replace(/\s+/g, " ").trim().slice(0, 4000) || null,
+      nearbyText: ((element.parentElement && (element.parentElement.innerText || element.parentElement.textContent)) || fullText).replace(/\\s+/g, " ").trim().slice(0, 4000) || null,
       selectedText,
       nodePosition: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
       theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
@@ -470,7 +478,7 @@ const PAGE_SCRIPT = `
       rect: (() => { const r = formTarget.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })(),
       annotationId: annotation ? annotation.id : null,
       viewport: { width: innerWidth, height: innerHeight },
-      tag: formTarget.tagName.toLowerCase(),
+      tag: descriptiveTagFor(formTarget),
       target: annotation ? annotation.target : formPendingItem.target,
       comment: annotation ? annotation.comment : "",
       designChange: formDraft.designChange,
@@ -585,7 +593,7 @@ const PAGE_SCRIPT = `
 
   const serializedBatch = () => ({
     url: state.startUrl,
-    title: document.title || "",
+    title: (document.title || "").slice(0, 500),
     viewport: Math.round(window.visualViewport ? window.visualViewport.width : innerWidth) + "x" +
       Math.round(window.visualViewport ? window.visualViewport.height : innerHeight),
     dpr: window.devicePixelRatio || 1,

@@ -316,7 +316,7 @@ describe("actual host entry and injected page script", () => {
     }
   });
 
-  test.failing("#8 long page title does not kill the annotation session", async () => {
+  test("#8 long page title does not kill the annotation session", async () => {
     const fixture = new CdpFixture({ title: "T".repeat(501) });
     const harness = hostFor(fixture);
     try {
@@ -331,16 +331,21 @@ describe("actual host entry and injected page script", () => {
       }
       expect(error).toBeUndefined();
       expect(opened).toMatchObject({ status: "active", editor: { tag: "button" } });
+      if (error || !opened) return;
+      expect((opened as { batch: { title: string } }).batch.title).toBe("T".repeat(500));
     } finally {
       await closeSession(harness, fixture);
     }
   });
 
-  test.failing("#8 long classes and role remain usable after saving an annotation", async () => {
+  test("#8 long classes and role remain usable after saving an annotation", async () => {
+    const longId = "element-" + "x".repeat(2_100);
     const longClass = "class-" + "x".repeat(2_100);
     const longRole = "role-" + "x".repeat(150);
+    const longAttribute = "data-evidence-" + "x".repeat(300);
+    const longAttributeValue = "value-" + "x".repeat(1_100);
     const fixture = new CdpFixture({
-      html: `<!doctype html><html><head></head><body><main><button class="${longClass}" role="${longRole}">Continue</button></main></body></html>`,
+      html: `<!doctype html><html><head></head><body><main><button id="${longId}" class="${longClass}" role="${longRole}" ${longAttribute}="${longAttributeValue}">Continue</button></main></body></html>`,
     });
     const harness = hostFor(fixture);
     try {
@@ -378,14 +383,44 @@ describe("actual host entry and injected page script", () => {
       expect(annotation.targetRole).toBeTruthy();
       expect(longClass.startsWith(annotation.classes!)).toBe(true);
       expect(longRole.startsWith(annotation.targetRole!)).toBe(true);
+      expect(annotation.selector).toBe("");
+      expect(annotation.targetPath).toBe("");
+      const metadataKey = longAttribute.slice(0, 256);
+      expect(annotation.metadata[metadataKey]).toBe(longAttributeValue.slice(0, 1000));
     } finally {
       await closeSession(harness, fixture);
     }
   });
 
-  test.failing("#9 evidence text preserves the letter s during extraction", async () => {
+  test("#8 a custom element tag longer than the contract remains editable", async () => {
+    const longTag = "x-" + "a".repeat(70);
     const fixture = new CdpFixture({
-      html: "<!doctype html><html><head></head><body><main><button>Some sample text</button></main></body></html>",
+      html: `<!doctype html><html><head></head><body><main><${longTag}>Continue</${longTag}></main></body></html>`,
+    });
+    const harness = hostFor(fixture);
+    try {
+      await start(harness, fixture);
+      click(fixture.dom.window, longTag);
+      const opened = await read(harness, fixture) as { editor: { id: string; tag: string } };
+      expect(opened.editor.tag).toBe(longTag.slice(0, 64));
+      const saved = await harness.experimental_call("saveEditor", {
+        wsEndpoint: fixture.endpoint,
+        editorId: opened.editor.id,
+        comment: "Keep the custom element evidence.",
+        designChange: null,
+      });
+      expect(saved).toMatchObject({ saved: true });
+      const batch = batchSchema.parse((saved as { batch: unknown }).batch);
+      expect(batch.annotations).toHaveLength(1);
+      expect(batch.annotations[0].tag).toBe(longTag.slice(0, 64));
+    } finally {
+      await closeSession(harness, fixture);
+    }
+  });
+
+  test("#9 evidence text preserves the letter s while normalizing whitespace", async () => {
+    const fixture = new CdpFixture({
+      html: "<!doctype html><html><head></head><body><main><button> Some\n sample\ttext </button></main></body></html>",
     });
     const harness = hostFor(fixture);
     try {
@@ -398,8 +433,12 @@ describe("actual host entry and injected page script", () => {
         comment: "Keep the text intact",
         designChange: null,
       });
-      const result = await read(harness, fixture) as { batch: { annotations: Array<{ immediateText: string | null }> } };
-      expect(result.batch.annotations[0].immediateText).toBe("Some sample text");
+      const result = await read(harness, fixture) as { batch: { annotations: Array<{ text: string | null; immediateText: string | null; nearbyText: string | null }> } };
+      expect(result.batch.annotations[0]).toMatchObject({
+        text: "Some sample text",
+        immediateText: "Some sample text",
+        nearbyText: "Some sample text",
+      });
     } finally {
       await closeSession(harness, fixture);
     }
