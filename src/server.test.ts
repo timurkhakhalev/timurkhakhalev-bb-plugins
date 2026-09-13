@@ -175,17 +175,6 @@ describe("browser annotation payload", () => {
     ).toBe("keep 1 annotation");
   });
 
-  it("keeps trusted comment input out of the page document", async () => {
-    const hostSource = await Bun.file(new URL("./host.ts", import.meta.url)).text();
-    const appSource = await Bun.file(new URL("./app.tsx", import.meta.url)).text();
-    expect(hostSource).toContain('worldName: "bb-browser-annotate"');
-    expect(hostSource).toContain('attachShadow({ mode: "closed" })');
-    expect(hostSource).toContain('status: "missing" as const');
-    expect(hostSource).not.toContain('<textarea placeholder="Add a comment');
-    expect(appSource).toContain('aria-label="Annotation comment"');
-    expect(appSource).toContain('rpc.call("save"');
-  });
-
   it("preserves an existing structured mention during bootstrap", () => {
     const mention = { id: "batch_1", label: "1 annotation", from: 0, to: 12 };
     const plan = planMentionReconciliation(

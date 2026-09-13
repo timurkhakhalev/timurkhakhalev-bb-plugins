@@ -20,3 +20,18 @@ test("constrains settings to space next to the element", () => {
   expect(result.popup.top).toBe(190);
   expect(result.popup.left + result.popup.width).toBeLessThanOrEqual(388);
 });
+
+test.failing("#4 a viewport-sized element still leaves a visible usable editor", () => {
+  const result = placeEditor(
+    { x: 0, y: 0, width: 1000, height: 700 },
+    { width: 1000, height: 700 },
+    { x: 0, y: 0, width: 1000, height: 700 },
+    true,
+  );
+  expect(result.popup.maxHeight).toBeGreaterThanOrEqual(44);
+  const top = result.popup.transform === "translateY(-100%)"
+    ? result.popup.top - result.popup.maxHeight
+    : result.popup.top;
+  expect(top).toBeGreaterThanOrEqual(0);
+  expect(top + result.popup.maxHeight).toBeLessThanOrEqual(700);
+});

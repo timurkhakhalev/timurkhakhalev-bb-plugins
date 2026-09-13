@@ -4,8 +4,9 @@
   "type": "module",
   "scripts": {
     "build": "bb plugin build",
-    "check": "tsc --noEmit && bun test",
-    "test": "bun test"
+    "check": "tsc --noEmit && tsc --project tsconfig.test.json --noEmit && bun test",
+    "test": "bun test",
+    "typecheck:test": "tsc --project tsconfig.test.json --noEmit"
   },
   "dependencies": {
     "zod": "^4.3.6"
@@ -24,13 +25,17 @@
     "@radix-ui/react-select": "^2.3.3",
     "@radix-ui/react-tooltip": "^1.2.12",
     "@types/better-sqlite3": "^7.6.12",
+    "@types/jsdom": "^27.0.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "better-sqlite3": "^12.0.0",
+    "bun-types": "^1.4.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cron-parser": "^5.5.0",
     "hono": "^4.11.9",
+    "jsdom": "^29.0.1",
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.4.0",
     "typescript": "^5.7.0",
