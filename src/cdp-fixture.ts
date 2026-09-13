@@ -20,6 +20,7 @@ export type CdpFixtureOptions = {
   title?: string;
   screenshotBase64?: string;
   failScreenshots?: number;
+  targetCount?: number;
 };
 
 export class CdpFixture {
@@ -27,6 +28,9 @@ export class CdpFixture {
   readonly url: string;
   readonly endpoint: string;
   screenshotCalls = 0;
+  activeConnections = 0;
+  closedConnections = 0;
+  private readonly idleWaiters = new Set<() => void>();
   private readonly server: ReturnType<typeof Bun.serve>;
   private readonly options: CdpFixtureOptions;
 
@@ -48,6 +52,17 @@ export class CdpFixture {
         return new Response("CDP fixture", { status: 404 });
       },
       websocket: {
+        open: () => {
+          this.activeConnections += 1;
+        },
+        close: () => {
+          this.activeConnections -= 1;
+          this.closedConnections += 1;
+          if (this.activeConnections === 0) {
+            for (const resolve of this.idleWaiters) resolve();
+            this.idleWaiters.clear();
+          }
+        },
         message: (socket, data) => {
           const request = JSON.parse(String(data)) as CdpRequest;
           void this.handle(request, socket as unknown as CdpSocket);
@@ -60,6 +75,21 @@ export class CdpFixture {
   async close(): Promise<void> {
     this.server.stop(true);
     this.dom.window.close();
+  }
+
+  async waitForNoConnections(timeoutMs = 1_000): Promise<void> {
+    if (this.activeConnections === 0) return;
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.idleWaiters.delete(onIdle);
+        reject(new Error("CDP fixture connection did not close"));
+      }, timeoutMs);
+      const onIdle = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      this.idleWaiters.add(onIdle);
+    });
   }
 
   setScreenshotFailures(count: number): void {
@@ -141,7 +171,12 @@ export class CdpFixture {
   private async resultFor(request: CdpRequest): Promise<Record<string, unknown>> {
     switch (request.method) {
       case "Target.getTargets":
-        return { targetInfos: [{ targetId: "target-test", type: "page" }] };
+        return {
+          targetInfos: Array.from({ length: this.options.targetCount ?? 1 }, (_, index) => ({
+            targetId: `target-test-${index}`,
+            type: "page",
+          })),
+        };
       case "Target.attachToTarget":
         return { sessionId: "session-test" };
       case "Page.getFrameTree":

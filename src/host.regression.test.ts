@@ -261,7 +261,7 @@ describe("actual host entry and injected page script", () => {
     }
   });
 
-  test.failing("#3 50 large captures stay under the host RPC limit without losing queued captures", async () => {
+  test("#3 50 large captures stay under the host RPC limit without losing queued captures", async () => {
     const fixture = new CdpFixture({ screenshotBase64: "A".repeat(200_000) });
     const harness = hostFor(fixture);
     try {
@@ -272,7 +272,7 @@ describe("actual host entry and injected page script", () => {
       let afterRevision = -1;
       let error: unknown;
       for (let attempt = 0; attempt < 20 && captures.size < 50; attempt += 1) {
-        let result: { revision: number; batch: Batch; captures: Array<{ annotationId: string; version: number; image: { base64: string } }> };
+        let result: { revision: number; batch: Batch; captures: Array<{ annotationId: string; version: number; image: { base64: string; width: number; height: number } }> };
         try {
           result = await read(harness, fixture, afterRevision) as typeof result;
         } catch (cause) {
@@ -285,9 +285,13 @@ describe("actual host entry and injected page script", () => {
           const key = `${capture.annotationId}:${capture.version}`;
           expect(captures.has(key)).toBe(false);
           expect(capture.image.base64).toHaveLength(200_000);
+          expect(capture.image).toMatchObject({ width: 1000, height: 700 });
           captures.set(key, { annotationId: capture.annotationId, version: capture.version });
         }
         afterRevision = result.revision;
+        if (result.captures.length === 0 && captures.size < 50) {
+          await fixture.setTime(Date.now() + 1_000);
+        }
       }
       expect(error).toBeUndefined();
       expect(captures.size).toBe(50);
@@ -299,20 +303,116 @@ describe("actual host entry and injected page script", () => {
     }
   });
 
-  test.failing("#5 active sessions retain the host worker until cleanup", async () => {
+  test("#3 an oversized capture stays bounded and remains marked for delayed retry", async () => {
+    const fixture = new CdpFixture({ screenshotBase64: "A".repeat(8_350_000) });
+    const harness = hostFor(fixture);
+    try {
+      await start(harness, fixture, restoredBatch(1, fixture.url));
+      const first = await read(harness, fixture) as {
+        captures: unknown[];
+        captureFailed: boolean;
+      };
+      expect(new TextEncoder().encode(JSON.stringify(first)).byteLength).toBeLessThanOrEqual(8 * 1024 * 1024);
+      expect(first).toMatchObject({ captures: [], captureFailed: true });
+      expect(fixture.screenshotCalls).toBe(4);
+
+      await fixture.setTime(Date.now() + 1_000);
+      const second = await read(harness, fixture) as {
+        captures: unknown[];
+        captureFailed: boolean;
+      };
+      expect(new TextEncoder().encode(JSON.stringify(second)).byteLength).toBeLessThanOrEqual(8 * 1024 * 1024);
+      expect(second).toMatchObject({ captures: [], captureFailed: true });
+      expect(fixture.screenshotCalls).toBe(8);
+    } finally {
+      await closeSession(harness, fixture);
+    }
+  });
+
+  test("#5 active sessions retain the host worker until cleanup", async () => {
     const fixture = new CdpFixture();
     const harness = hostFor(fixture);
-    let disposed = false;
     try {
       await start(harness, fixture);
       expect(harness.experimental_getRetainedWorkerLeaseCount()).toBeGreaterThan(0);
+      expect(harness.experimental_getRetainedWorkerLeaseCount()).toBe(1);
+      expect(fixture.activeConnections).toBe(1);
+      await read(harness, fixture);
+      await read(harness, fixture);
+      expect(harness.experimental_getRetainedWorkerLeaseCount()).toBe(1);
+      expect(fixture.activeConnections).toBe(1);
       await harness.experimental_call("cleanupSession", { wsEndpoint: fixture.endpoint });
+      expect(harness.experimental_getRetainedWorkerLeaseCount()).toBe(0);
+      await fixture.waitForNoConnections();
+      expect(fixture.activeConnections).toBe(0);
+      expect(fixture.closedConnections).toBe(1);
       await harness.experimental_dispose();
-      disposed = true;
       expect(harness.experimental_getRetainedWorkerLeaseCount()).toBe(0);
     } finally {
-      if (disposed) await fixture.close();
-      else await closeSession(harness, fixture);
+      await harness.experimental_dispose();
+      await fixture.close();
+    }
+  });
+
+  test("#5 independent sessions retain and release their own host workers", async () => {
+    const firstFixture = new CdpFixture();
+    const secondFixture = new CdpFixture();
+    const harness = hostFor(firstFixture);
+    try {
+      await start(harness, firstFixture);
+      await start(harness, secondFixture);
+      expect(harness.experimental_getRetainedWorkerLeaseCount()).toBe(2);
+      expect(firstFixture.activeConnections).toBe(1);
+      expect(secondFixture.activeConnections).toBe(1);
+
+      await harness.experimental_call("cleanupSession", { wsEndpoint: firstFixture.endpoint });
+      expect(harness.experimental_getRetainedWorkerLeaseCount()).toBe(1);
+      await firstFixture.waitForNoConnections();
+      expect(firstFixture.activeConnections).toBe(0);
+      expect(secondFixture.activeConnections).toBe(1);
+
+      await harness.experimental_dispose();
+      expect(harness.experimental_getRetainedWorkerLeaseCount()).toBe(0);
+      await secondFixture.waitForNoConnections();
+      expect(secondFixture.activeConnections).toBe(0);
+      expect(firstFixture.closedConnections).toBe(1);
+      expect(secondFixture.closedConnections).toBe(1);
+    } finally {
+      await harness.experimental_dispose();
+      await firstFixture.close();
+      await secondFixture.close();
+    }
+  });
+
+  test("#5 failed and cancelled host calls do not retain workers", async () => {
+    const failedFixture = new CdpFixture({ targetCount: 2 });
+    const failedHarness = hostFor(failedFixture);
+    try {
+      await expect(start(failedHarness, failedFixture)).rejects.toThrow("Selected Browser tab is no longer available");
+      expect(failedHarness.experimental_getRetainedWorkerLeaseCount()).toBe(0);
+      await failedFixture.waitForNoConnections();
+      expect(failedFixture.closedConnections).toBe(1);
+      await failedHarness.experimental_dispose();
+      expect(failedHarness.experimental_getRetainedWorkerLeaseCount()).toBe(0);
+    } finally {
+      await failedHarness.experimental_dispose();
+      await failedFixture.close();
+    }
+
+    const cancelledFixture = new CdpFixture();
+    const cancelledHarness = hostFor(cancelledFixture);
+    try {
+      const controller = new AbortController();
+      const call = cancelledHarness.experimental_call("startSession", {
+        wsEndpoint: cancelledFixture.endpoint,
+        batch: null,
+      }, { signal: controller.signal });
+      controller.abort();
+      await expect(call).rejects.toThrow();
+      expect(cancelledHarness.experimental_getRetainedWorkerLeaseCount()).toBe(0);
+    } finally {
+      await cancelledHarness.experimental_dispose();
+      await cancelledFixture.close();
     }
   });
 

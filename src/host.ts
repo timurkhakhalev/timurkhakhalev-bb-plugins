@@ -9,6 +9,14 @@ import { batchSchema, editorDraftSchema, hostContract } from "./contracts.js";
  */
 
 const CONTROL_ENDED = "Browser control ended";
+const HOST_RESULT_BYTE_BUDGET = 8 * 1024 * 1024 - 64 * 1024;
+const EDITOR_PREVIEW_MAX_CHARS = 12_000_000;
+const SCREENSHOT_ATTEMPTS = [
+  { scale: 1, quality: 85 },
+  { scale: 0.75, quality: 70 },
+  { scale: 0.5, quality: 55 },
+  { scale: 0.25, quality: 40 },
+] as const;
 
 const PAGE_SCRIPT = `
 (() => {
@@ -745,12 +753,12 @@ const PAGE_SCRIPT = `
     if (!next || next.retryAt > Date.now()) return null;
     return state.captureQueue.shift();
   };
-  window.__bbAnnotateRequeueCapture = (id, version) => {
+  window.__bbAnnotateRequeueCapture = (id, version, retryDelay = 750) => {
     const item = state.items.find((candidate) => candidate.id === id);
     if (!item || item.version !== version) return false;
     state.captureFailed = true;
     if (!state.captureQueue.some((capture) => capture.id === id && capture.version === version)) {
-      state.captureQueue.unshift({ id, version, retryAt: Date.now() + 750 });
+      state.captureQueue.unshift({ id, version, retryAt: Date.now() + Math.max(0, retryDelay) });
     }
     return true;
   };
@@ -766,7 +774,7 @@ const PAGE_SCRIPT = `
 
 type Connection = ReturnType<typeof connect>;
 
-function connect(wsEndpoint: string) {
+function connect(wsEndpoint: string, onClosed: () => void) {
   const socket = new WebSocket(wsEndpoint);
   const pending = new Map<
     number,
@@ -783,6 +791,7 @@ function connect(wsEndpoint: string) {
     resolve: resolveOpened,
     reject: rejectOpened,
   } = Promise.withResolvers<void>();
+  const { promise: closed, resolve: resolveClosed } = Promise.withResolvers<void>();
   const failPending = (message: string) => {
     for (const request of pending.values()) {
       clearTimeout(request.timeout);
@@ -812,8 +821,10 @@ function connect(wsEndpoint: string) {
   });
   socket.addEventListener("close", () => {
     ended = true;
+    resolveClosed();
     rejectOpened(new Error(CONTROL_ENDED));
     failPending(CONTROL_ENDED);
+    onClosed();
   });
   const request = (method: string, params: Record<string, unknown> = {}, sessionId?: string) => {
     if (ended || socket.readyState !== WebSocket.OPEN)
@@ -830,6 +841,7 @@ function connect(wsEndpoint: string) {
   };
   return {
     opened,
+    closed,
     request,
     close(message = CONTROL_ENDED) {
       if (ended) return;
@@ -846,24 +858,37 @@ function connect(wsEndpoint: string) {
 const pageConnections = new Map<string, {
   connection: Connection;
   sessionId: string | null;
+  workerLease: { dispose(): Promise<void> };
   preview?: { key: string; dataUrl: string };
 }>();
 
-function closePage(wsEndpoint: string): void {
+async function closePage(wsEndpoint: string): Promise<void> {
   const page = pageConnections.get(wsEndpoint);
+  if (!page) return;
   pageConnections.delete(wsEndpoint);
-  page?.connection.close();
+  page.connection.close();
+  await page.connection.closed;
+  await page.workerLease.dispose();
 }
 
 async function withPage<T>(
   wsEndpoint: string,
   signal: AbortSignal,
+  retainWorker: () => { dispose(): Promise<void> },
   run: (connection: Connection, sessionId: string, contextId: number) => Promise<T>,
 ): Promise<T> {
   signal.throwIfAborted();
   let page = pageConnections.get(wsEndpoint);
   if (!page) {
-    page = { connection: connect(wsEndpoint), sessionId: null };
+    const connection = connect(wsEndpoint, () => void closePage(wsEndpoint));
+    let workerLease: { dispose(): Promise<void> };
+    try {
+      workerLease = retainWorker();
+    } catch (error) {
+      connection.close();
+      throw error;
+    }
+    page = { connection, sessionId: null, workerLease };
     pageConnections.set(wsEndpoint, page);
   }
   const { connection } = page;
@@ -873,8 +898,7 @@ async function withPage<T>(
   });
   const onAbort = () => {
     const error = new Error("Annotate session cancelled");
-    closePage(wsEndpoint);
-    rejectOnAbort(error);
+    void closePage(wsEndpoint).then(() => rejectOnAbort(error), () => rejectOnAbort(error));
   };
   signal.addEventListener("abort", onAbort, { once: true });
   try {
@@ -913,7 +937,7 @@ async function withPage<T>(
       ).executionContextId;
     return await run(connection, sessionId, contextId);
   } catch (error) {
-    closePage(wsEndpoint);
+    await closePage(wsEndpoint);
     throw error;
   } finally {
     signal.removeEventListener("abort", onAbort);
@@ -945,6 +969,7 @@ async function screenshot(
   connection: Connection,
   sessionId: string,
   contextId: number,
+  options: { scale: number; quality: number } = { scale: 1, quality: 85 },
 ): Promise<{
   base64: string;
   width: number;
@@ -963,40 +988,77 @@ async function screenshot(
     contextId,
     "(visualViewport ? { width: visualViewport.width, height: visualViewport.height } : { width: innerWidth, height: innerHeight })",
   )) as { width: number; height: number };
+  const captureParams: Record<string, unknown> = {
+    format: "jpeg",
+    quality: options.quality,
+    captureBeyondViewport: false,
+  };
+  if (options.scale !== 1) {
+    captureParams.clip = {
+      x: 0,
+      y: 0,
+      width: viewport.width,
+      height: viewport.height,
+      scale: options.scale,
+    };
+  }
   const data = z
     .object({ data: z.string() })
     .parse(
       await connection.request(
         "Page.captureScreenshot",
-        { format: "jpeg", quality: 85, captureBeyondViewport: false },
+        captureParams,
         sessionId,
       ),
     ).data;
   return {
     base64: data,
-    width: Math.max(1, Math.round(viewport.width * dpr)),
-    height: Math.max(1, Math.round(viewport.height * dpr)),
+    width: Math.max(1, Math.round(viewport.width * dpr * options.scale)),
+    height: Math.max(1, Math.round(viewport.height * dpr * options.scale)),
     mimeType: "image/jpeg" as const,
   };
+}
+
+type HostCaptureImage = Awaited<ReturnType<typeof screenshot>>;
+type HostCapture = { annotationId: string; version: number; image: HostCaptureImage };
+
+function fitsHostResult(value: unknown): boolean {
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized !== undefined && new TextEncoder().encode(serialized).byteLength <= HOST_RESULT_BYTE_BUDGET;
+  } catch {
+    return false;
+  }
+}
+
+async function capturePreview(
+  connection: Connection,
+  sessionId: string,
+  contextId: number,
+  fits: (dataUrl: string) => boolean,
+): Promise<string | null> {
+  for (const options of SCREENSHOT_ATTEMPTS) {
+    try {
+      const image = await screenshot(connection, sessionId, contextId, options);
+      const dataUrl = `data:${image.mimeType};base64,${image.base64}`;
+      if (dataUrl.length <= EDITOR_PREVIEW_MAX_CHARS && fits(dataUrl)) return dataUrl;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 async function drainCaptures(
   connection: Connection,
   sessionId: string,
   contextId: number,
+  fits: (captures: HostCapture[], captureFailed: boolean) => boolean,
 ): Promise<{
-  captures: Array<{
-    annotationId: string;
-    version: number;
-    image: Awaited<ReturnType<typeof screenshot>>;
-  }>;
+  captures: HostCapture[];
   captureFailed: boolean;
 }> {
-  const captures: Array<{
-    annotationId: string;
-    version: number;
-    image: Awaited<ReturnType<typeof screenshot>>;
-  }> = [];
+  const captures: HostCapture[] = [];
   for (let index = 0; index < 50; index += 1) {
     const raw = await evaluate(
       connection,
@@ -1011,14 +1073,31 @@ async function drainCaptures(
     if (!capture) break;
     try {
       await connection.request("Page.enable", {}, sessionId).catch(() => undefined);
-      const image = await screenshot(connection, sessionId, contextId);
+      let delivered: HostCapture | null = null;
+      for (const options of SCREENSHOT_ATTEMPTS) {
+        const image = await screenshot(connection, sessionId, contextId, options);
+        const candidate = { annotationId: capture.id, version: capture.version, image };
+        if (fits([...captures, candidate], false)) {
+          delivered = candidate;
+          break;
+        }
+      }
+      if (!delivered) {
+        await evaluate(
+          connection,
+          sessionId,
+          contextId,
+          `window.__bbAnnotateRequeueCapture && window.__bbAnnotateRequeueCapture(${JSON.stringify(capture.id)}, ${capture.version})`,
+        ).catch(() => undefined);
+        return { captures, captureFailed: true };
+      }
       await evaluate(
         connection,
         sessionId,
         contextId,
         `window.__bbAnnotateFinishCapture && window.__bbAnnotateFinishCapture(${JSON.stringify(capture.id)}, ${capture.version})`,
       );
-      captures.push({ annotationId: capture.id, version: capture.version, image });
+      captures.push(delivered);
     } catch {
       await evaluate(
         connection,
@@ -1036,7 +1115,7 @@ export default experimental_defineHostEntry({
   contract: hostContract,
   handlers: {
     startSession: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => {
+      return withPage(input.wsEndpoint, context.signal, () => context.experimental_retainWorker(), async (connection, sessionId, contextId) => {
         await evaluate(
           connection,
           sessionId,
@@ -1050,7 +1129,7 @@ export default experimental_defineHostEntry({
       });
     },
     readSession: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => {
+      return withPage(input.wsEndpoint, context.signal, () => context.experimental_retainWorker(), async (connection, sessionId, contextId) => {
         const doneRaw = await evaluate(
           connection,
           sessionId,
@@ -1101,31 +1180,71 @@ export default experimental_defineHostEntry({
             captureFailed: z.boolean(),
           })
           .parse(raw);
-        const captureResult = await drainCaptures(connection, sessionId, contextId);
         const page = pageConnections.get(input.wsEndpoint)!;
-        if (value.editor) {
-          const key = JSON.stringify([value.editor.id, value.editor.designChange]);
-          if (page.preview?.key !== key) {
-            const image = await screenshot(connection, sessionId, contextId);
-            page.preview = { key, dataUrl: `data:${image.mimeType};base64,${image.base64}` };
-          }
-          value.editor.previewDataUrl = page.preview.dataUrl;
-        } else {
-          delete page.preview;
-        }
-        return {
-          status: value.currentUrl === value.batch.url ? "active" as const : "navigated" as const,
+        const responseStatus = value.currentUrl === value.batch.url ? "active" as const : "navigated" as const;
+        const baseEditor = value.editor
+          ? { ...value.editor, previewDataUrl: null as string | null }
+          : null;
+        const responseFor = (
+          captures: HostCapture[],
+          captureFailed: boolean,
+          editor = baseEditor,
+        ) => ({
+          status: responseStatus,
           revision: value.revision,
           currentUrl: value.currentUrl,
           batch: value.batch,
-          editor: value.editor,
-          captureFailed: value.captureFailed || captureResult.captureFailed,
-          captures: captureResult.captures,
-        };
+          editor,
+          captureFailed: value.captureFailed || captureFailed,
+          captures,
+        });
+        if (value.editor) {
+          const key = JSON.stringify([value.editor.id, value.editor.designChange]);
+          let previewDataUrl = page.preview?.key === key ? page.preview.dataUrl : null;
+          if (
+            !previewDataUrl ||
+            !fitsHostResult(responseFor([], false, { ...baseEditor!, previewDataUrl }))
+          ) {
+            previewDataUrl = await capturePreview(
+              connection,
+              sessionId,
+              contextId,
+              (dataUrl) => fitsHostResult(responseFor([], false, { ...baseEditor!, previewDataUrl: dataUrl })),
+            );
+          }
+          if (previewDataUrl) {
+            page.preview = { key, dataUrl: previewDataUrl };
+          } else {
+            delete page.preview;
+          }
+          const editor = { ...baseEditor!, previewDataUrl };
+          if (!fitsHostResult(responseFor([], false, editor))) {
+            throw new Error("Browser annotation response exceeds the host output limit");
+          }
+          const captureResult = await drainCaptures(
+            connection,
+            sessionId,
+            contextId,
+            (captures, captureFailed) => fitsHostResult(responseFor(captures, captureFailed, editor)),
+          );
+          return responseFor(captureResult.captures, captureResult.captureFailed, editor);
+        } else {
+          delete page.preview;
+        }
+        if (!fitsHostResult(responseFor([], false))) {
+          throw new Error("Browser annotation response exceeds the host output limit");
+        }
+        const captureResult = await drainCaptures(
+          connection,
+          sessionId,
+          contextId,
+          (captures, captureFailed) => fitsHostResult(responseFor(captures, captureFailed)),
+        );
+        return responseFor(captureResult.captures, captureResult.captureFailed);
       });
     },
     mutateSession: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => ({
+      return withPage(input.wsEndpoint, context.signal, () => context.experimental_retainWorker(), async (connection, sessionId, contextId) => ({
         changed: Boolean(
           await evaluate(
             connection,
@@ -1137,7 +1256,7 @@ export default experimental_defineHostEntry({
       }));
     },
     previewEditor: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => ({
+      return withPage(input.wsEndpoint, context.signal, () => context.experimental_retainWorker(), async (connection, sessionId, contextId) => ({
         changed: Boolean(
           await evaluate(
             connection,
@@ -1149,7 +1268,7 @@ export default experimental_defineHostEntry({
       }));
     },
     saveEditor: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => {
+      return withPage(input.wsEndpoint, context.signal, () => context.experimental_retainWorker(), async (connection, sessionId, contextId) => {
         const saved = Boolean(
           await evaluate(
             connection,
@@ -1177,18 +1296,27 @@ export default experimental_defineHostEntry({
               "window.__bbAnnotateRead ? window.__bbAnnotateRead() : null",
             ),
           );
-        const captureResult = await drainCaptures(connection, sessionId, contextId);
-        return {
-          saved: true,
+        const responseFor = (captures: HostCapture[], captureFailed: boolean) => ({
+          saved: true as const,
           revision: value.revision,
           batch: value.batch,
-          captures: captureResult.captures,
-          captureFailed: captureResult.captureFailed,
-        };
+          captures,
+          captureFailed,
+        });
+        if (!fitsHostResult(responseFor([], false))) {
+          throw new Error("Browser annotation response exceeds the host output limit");
+        }
+        const captureResult = await drainCaptures(
+          connection,
+          sessionId,
+          contextId,
+          (captures, captureFailed) => fitsHostResult(responseFor(captures, captureFailed)),
+        );
+        return responseFor(captureResult.captures, captureResult.captureFailed);
       });
     },
     cancelEditor: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => ({
+      return withPage(input.wsEndpoint, context.signal, () => context.experimental_retainWorker(), async (connection, sessionId, contextId) => ({
         changed: Boolean(
           await evaluate(
             connection,
@@ -1201,7 +1329,7 @@ export default experimental_defineHostEntry({
     },
     cleanupSession: async (input, context) => {
       try {
-        return await withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => {
+        return await withPage(input.wsEndpoint, context.signal, () => context.experimental_retainWorker(), async (connection, sessionId, contextId) => {
         await evaluate(
           connection,
           sessionId,
@@ -1209,10 +1337,13 @@ export default experimental_defineHostEntry({
           "window.__bbAnnotateCleanup && window.__bbAnnotateCleanup(); true",
         ).catch(() => undefined);
         return { cleaned: true as const };
-        });
+      });
       } finally {
-        closePage(input.wsEndpoint);
+        await closePage(input.wsEndpoint);
       }
     },
+  },
+  dispose: async () => {
+    await Promise.all([...pageConnections.keys()].map((wsEndpoint) => closePage(wsEndpoint)));
   },
 });
