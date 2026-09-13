@@ -128,14 +128,18 @@ const PAGE_SCRIPT = `
   let applyingPreview = false;
   let previewGuardTimer = 0;
 
-  const directTextNode = (element) => {
+  const soleTextNode = (element) => {
     const nodes = Array.from(element.childNodes).filter(
-      (node) => node.nodeType === Node.TEXT_NODE && (node.nodeValue || "").trim().length > 0,
+      (node) => node.nodeType === Node.TEXT_NODE,
     );
     const childHasText = Array.from(element.children).some(
       (child) => ((child.innerText || child.textContent || "").trim().length > 0),
     );
     return nodes.length === 1 && !childHasText ? nodes[0] : null;
+  };
+  const directTextNode = (element) => {
+    const node = soleTextNode(element);
+    return node && (node.nodeValue || "").trim().length > 0 ? node : null;
   };
   const fullTextValueFor = (element) => {
     const node = directTextNode(element);
@@ -155,13 +159,18 @@ const PAGE_SCRIPT = `
       return null;
     }
   };
-  const setTrackedText = (item, value) => {
+  const trackedTextNode = (item, adoptReplacement) => {
     let node = item.textNode;
     if (!node || !node.isConnected) {
       const element = resolveElement(item);
-      node = element ? directTextNode(element) : null;
+      node = element ? soleTextNode(element) : null;
       item.textNode = node;
+      if (node && adoptReplacement) item.rollbackText = node.nodeValue || "";
     }
+    return node;
+  };
+  const setTrackedText = (item, value) => {
+    const node = trackedTextNode(item, false);
     if (node) node.nodeValue = value;
   };
   const activeSources = () => {
@@ -170,12 +179,12 @@ const PAGE_SCRIPT = `
   };
   const restoreDesignText = (item) => {
     if (!item || !item.designChange || !item.designChange.text) return;
-    setTrackedText(
-      item,
-      typeof item.rollbackText === "string"
+    const node = trackedTextNode(item, true);
+    if (node) {
+      node.nodeValue = typeof item.rollbackText === "string"
         ? item.rollbackText
-        : item.designChange.text.previousValue,
-    );
+        : item.designChange.text.previousValue;
+    }
   };
   const renderDesignPreview = () => {
     if (!designStyle.isConnected) return;
