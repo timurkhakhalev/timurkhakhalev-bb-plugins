@@ -29,6 +29,8 @@ type LiveAnnotation = {
   previewDataUrl: string | null;
 };
 
+const attachedMentions = new Map<string, { batchId: string; label: string }>();
+
 const annotateIcon = (
   <svg
     aria-hidden
@@ -134,21 +136,20 @@ function useBrowserAnnotationsComposerSync() {
   const composerRef = useRef(composer);
   const revisionRef = useRef(-1);
   const liveBatchRef = useRef<string | null>(null);
-  const attachedRef = useRef<{ batchId: string; label: string } | null>(null);
   const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
   composerRef.current = composer;
 
   const detach = useCallback(() => {
-    const attached = attachedRef.current;
+    if (!threadId) return;
+    const attached = attachedMentions.get(threadId);
     if (!attached) return;
     composerRef.current.updateText((text) => removeMentionLabel(text, attached.label));
-    attachedRef.current = null;
-  }, []);
+    attachedMentions.delete(threadId);
+  }, [threadId]);
 
   useEffect(() => {
     revisionRef.current = -1;
     liveBatchRef.current = null;
-    attachedRef.current = null;
   }, [threadId]);
 
   useEffect(() => {
@@ -174,7 +175,7 @@ function useBrowserAnnotationsComposerSync() {
 
         if (live.batchId && live.annotations.length > 0) {
           const label = pluralizeAnnotations(live.annotations.length);
-          const attached = attachedRef.current;
+          const attached = attachedMentions.get(threadId);
           if (!attached) {
             if (!composerRef.current.text.includes(label)) {
               composerRef.current.insertMention({
@@ -183,7 +184,7 @@ function useBrowserAnnotationsComposerSync() {
                 label,
               });
             }
-            attachedRef.current = { batchId: live.batchId, label };
+            attachedMentions.set(threadId, { batchId: live.batchId, label });
           } else if (attached.label !== label) {
             composerRef.current.updateText((text) => removeMentionLabel(text, attached.label));
             composerRef.current.insertMention({
@@ -191,7 +192,7 @@ function useBrowserAnnotationsComposerSync() {
               id: live.batchId,
               label,
             });
-            attachedRef.current = { batchId: live.batchId, label };
+            attachedMentions.set(threadId, { batchId: live.batchId, label });
           }
         } else if (!live.active || revisionChanged) {
           detach();

@@ -128,6 +128,11 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     }
   };
 
+  const latestPendingBatch = (threadId: string) =>
+    [...pending.values()]
+      .filter((item) => item.threadId === threadId && !item.sent)
+      .sort((left, right) => right.createdAt - left.createdAt)[0] ?? null;
+
   async function findScope(threadId: string, tabId: string) {
     const desktop = bb.sdk.experimental_desktopBrowsers;
     for (const machine of await bb.sdk.hosts.list()) {
@@ -328,6 +333,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     if (session.finishing) return session.finishing;
     session.finishing = (async () => {
       if (session.controller.signal.aborted) return;
+      if (sessions.get(item.threadId) === session) sessions.delete(item.threadId);
       if (session.wsEndpoint) {
         await host.call(
           "cleanupSession",
@@ -417,6 +423,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     async start({ threadId, tabId }) {
       const scope = await findScope(threadId, tabId);
       sessions.get(threadId)?.controller.abort();
+      const resumed = latestPendingBatch(threadId);
       const controller = new AbortController();
       const session: ActiveSession = {
         controller,
@@ -424,9 +431,11 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         hostId: scope.hostId,
         scope,
         wsEndpoint: null,
-        batchId: `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`,
+        batchId: resumed?.id ?? `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`,
         screenshots: new Map(),
-        imagePaths: new Map(),
+        imagePaths: new Map(
+          resumed?.images.map((image) => [image.annotationId, image.path]) ?? [],
+        ),
         stagedRevision: -1,
         finishing: null,
       };
@@ -436,7 +445,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       void withLease(scope, tabId, controller.signal, async (wsEndpoint) => {
         await host.call(
           "startSession",
-          { wsEndpoint },
+          { wsEndpoint, batch: resumed?.batch ?? null },
           {
             hostId: scope.hostId,
             signal: controller.signal,
@@ -481,19 +490,32 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       const session = sessions.get(threadId);
       if (!session) return { cancelled: false };
       if (session.wsEndpoint) {
+        const latest = await host.call(
+          "readSession",
+          { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
+          { hostId: session.hostId, timeoutMs: 15_000 },
+        ).catch(() => null);
+        if (latest?.capture) {
+          session.screenshots.set(latest.capture.annotationId, latest.capture.image);
+        }
+        if (latest?.batch) {
+          await stageBatch(
+            session,
+            latest.batch,
+            latest.preview
+              ? `data:${latest.preview.mimeType};base64,${latest.preview.base64}`
+              : null,
+          );
+        }
+        if (sessions.get(threadId) === session) sessions.delete(threadId);
         await host.call(
           "cleanupSession",
           { wsEndpoint: session.wsEndpoint },
           { hostId: session.hostId, timeoutMs: 15_000 },
         ).catch(() => undefined);
       }
+      if (sessions.get(threadId) === session) sessions.delete(threadId);
       session.controller.abort();
-      bb.realtime.publish("annotate-session", {
-        threadId,
-        tabId: session.tabId,
-        status: "cancelled",
-        count: 0,
-      });
       return { cancelled: true };
     },
 
@@ -525,11 +547,29 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
     async live({ threadId, afterRevision }) {
       const session = sessions.get(threadId);
-      if (!session || session.wsEndpoint === null) {
+      if (!session) {
+        const paused = latestPendingBatch(threadId);
         return {
-          active: Boolean(session),
+          active: false,
           revision: Math.max(0, afterRevision),
-          batchId: session?.batchId ?? null,
+          batchId: paused?.id ?? null,
+          annotations: paused
+            ? paused.batch.annotations.map((annotation) => ({
+                id: annotation.id,
+                tag: annotation.tag,
+                target: annotation.target,
+                comment: annotation.comment,
+                designChange: annotation.designChange,
+                previewDataUrl: paused.previewDataUrl,
+              }))
+            : [],
+        };
+      }
+      if (session.wsEndpoint === null) {
+        return {
+          active: true,
+          revision: Math.max(0, afterRevision),
+          batchId: session.batchId,
           annotations: [],
         };
       }
@@ -549,6 +589,8 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         session.screenshots.set(result.capture.annotationId, result.capture.image);
       }
       if (result.status === "cancelled") {
+        pending.delete(session.batchId);
+        if (sessions.get(threadId) === session) sessions.delete(threadId);
         session.controller.abort();
         bb.realtime.publish("annotate-session", {
           threadId,
@@ -705,9 +747,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
     async draft({ threadId }) {
       prunePending();
-      const item = [...pending.values()]
-        .filter((candidate) => candidate.threadId === threadId && !candidate.sent)
-        .sort((left, right) => right.createdAt - left.createdAt)[0];
+      const item = latestPendingBatch(threadId);
       if (!item) return { batchId: null, annotations: [] };
       return {
         batchId: item.id,
@@ -724,6 +764,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
     async discard({ threadId }) {
       const session = sessions.get(threadId);
+      if (session) sessions.delete(threadId);
       session?.controller.abort();
       let discarded = Boolean(session);
       for (const [id, item] of pending) {

@@ -134,6 +134,7 @@ export const hostContract = {
     input: z
       .object({
         wsEndpoint: z.string().url(),
+        batch: batchSchema.nullable(),
       })
       .strict(),
     output: z.object({ started: z.literal(true) }).strict(),

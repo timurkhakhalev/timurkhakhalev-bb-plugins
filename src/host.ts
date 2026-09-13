@@ -23,6 +23,8 @@ const PAGE_SCRIPT = `
     lastX: -1,
     lastY: -1,
   };
+  const restoreBatch = window.__bbAnnotateRestoreBatch || null;
+  window.__bbAnnotateRestoreBatch = null;
   window[NS] = state;
   const previousCursor = document.documentElement.style.cursor;
 
@@ -956,6 +958,29 @@ const PAGE_SCRIPT = `
   if (document.body) {
     mutationObserver.observe(document.body, { childList: true, characterData: true, subtree: true });
   }
+  if (restoreBatch && restoreBatch.url === location.href && Array.isArray(restoreBatch.annotations)) {
+    state.items = restoreBatch.annotations.map((annotation, index) => {
+      let element = null;
+      try { element = annotation.selector ? document.querySelector(annotation.selector) : null; } catch {}
+      const rect = annotation.rect;
+      return {
+        ...annotation,
+        seq: index + 1,
+        element,
+        snapshotRect: rect,
+        clientX: rect.x + Math.min(18, Math.max(8, rect.width / 2)),
+        clientY: rect.y,
+        capturePending: false,
+      };
+    });
+    state.seq = state.items.length;
+    state.revision = state.items.length > 0 ? 1 : 0;
+    for (const item of state.items) {
+      paintPin(item);
+      paintOutline(item);
+    }
+    renderDesignPreview();
+  }
   document.documentElement.style.cursor = "crosshair";
   syncBar();
   window.__bbAnnotateCleanup = cleanup;
@@ -1146,7 +1171,7 @@ export default experimental_defineHostEntry({
         await evaluate(
           connection,
           sessionId,
-          "window.__bbAnnotateDone = null; window.__bbAnnotateCount = 0; true",
+          `window.__bbAnnotateDone = null; window.__bbAnnotateCount = 0; window.__bbAnnotateRestoreBatch = ${JSON.stringify(input.batch)}; true`,
         );
         await evaluate(connection, sessionId, PAGE_SCRIPT);
         return { started: true as const };
