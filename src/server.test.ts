@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { batchSchema, screenshotSchema } from "./contracts.js";
-import { removeStructuredMentionText } from "./composer.js";
+import { planMentionReconciliation, removeStructuredMentionText } from "./composer.js";
 import {
   buildBatchMentionInput,
   missingCaptureAnnotationIds,
@@ -144,10 +144,43 @@ describe("browser annotation payload", () => {
     ).toBe("keep 1 annotation");
   });
 
-  it("keeps the trusted editor in an isolated world and closed shadow root", async () => {
+  it("keeps trusted comment input out of the page document", async () => {
     const hostSource = await Bun.file(new URL("./host.ts", import.meta.url)).text();
+    const appSource = await Bun.file(new URL("./app.tsx", import.meta.url)).text();
     expect(hostSource).toContain('worldName: "bb-browser-annotate"');
     expect(hostSource).toContain('attachShadow({ mode: "closed" })');
     expect(hostSource).toContain('status: "missing" as const');
+    expect(hostSource).not.toContain('<textarea placeholder="Add a comment');
+    expect(appSource).toContain('aria-label="Annotation comment"');
+    expect(appSource).toContain('rpc.call("save"');
+  });
+
+  it("preserves an existing structured mention during bootstrap", () => {
+    const mention = { id: "batch_1", label: "1 annotation", from: 0, to: 12 };
+    const plan = planMentionReconciliation(
+      [mention],
+      [{ id: "batch_1", label: "1 annotation" }],
+      new Set(),
+      new Map(),
+    );
+    expect(plan.remove).toEqual([]);
+    expect(plan.insert).toEqual([]);
+    expect(plan.discard).toEqual([]);
+    expect(plan.observed.has("batch_1")).toBe(true);
+  });
+
+  it("discards only a previously observed mention removed by the user", () => {
+    const batch = [{ id: "batch_1", label: "1 annotation" }];
+    const initial = planMentionReconciliation([], batch, new Set(), new Map());
+    expect(initial.insert).toEqual(batch);
+    expect(initial.discard).toEqual([]);
+
+    const removed = planMentionReconciliation(
+      [],
+      batch,
+      new Set(["batch_1"]),
+      new Map(),
+    );
+    expect(removed.discard).toEqual(["batch_1"]);
   });
 });

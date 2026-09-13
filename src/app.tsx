@@ -11,8 +11,8 @@ import {
   type ExperimentalPluginBrowserToolbarActionProps,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import type { DesignChange, rpcContract } from "./contracts.js";
-import { removeStructuredMentionText } from "./composer.js";
+import type { DesignChange, EditorDraft, rpcContract } from "./contracts.js";
+import { planMentionReconciliation, removeStructuredMentionText } from "./composer.js";
 
 type SessionEvent = {
   threadId?: string;
@@ -33,6 +33,7 @@ type LiveAnnotation = {
 };
 
 const composerDrafts = new Map<string, ComposerStructuredDraft>();
+const composerDraftReady = new Set<string>();
 
 const annotateIcon = (
   <svg
@@ -50,11 +51,215 @@ const annotateIcon = (
   </svg>
 );
 
+const designGroups = [
+  { title: "Content", properties: ["text", "color", "background-color", "opacity"] },
+  { title: "Typography", properties: ["font-family", "font-size", "font-weight"] },
+  { title: "Border", properties: ["border-radius", "border-color", "border-width"] },
+  { title: "Dimensions", properties: ["width", "height"] },
+  { title: "Padding", properties: ["padding-top", "padding-right", "padding-bottom", "padding-left"] },
+  { title: "Margin", properties: ["margin-top", "margin-right", "margin-bottom", "margin-left"] },
+  { title: "Flex layout", properties: ["flex-direction", "justify-content", "align-items", "gap", "row-gap", "column-gap"] },
+] as const;
+
+const designLabels: Record<string, string> = {
+  text: "Text",
+  color: "Text color",
+  "background-color": "Background",
+  opacity: "Opacity",
+  "font-family": "Font",
+  "font-size": "Font size",
+  "font-weight": "Font weight",
+  "border-radius": "Border radius",
+  "border-color": "Border color",
+  "border-width": "Border width",
+  width: "Width",
+  height: "Height",
+  "padding-top": "Padding top",
+  "padding-right": "Padding right",
+  "padding-bottom": "Padding bottom",
+  "padding-left": "Padding left",
+  "margin-top": "Margin top",
+  "margin-right": "Margin right",
+  "margin-bottom": "Margin bottom",
+  "margin-left": "Margin left",
+  "flex-direction": "Direction",
+  "justify-content": "Distribution",
+  "align-items": "Alignment",
+  gap: "Spacing",
+  "row-gap": "Vertical gap",
+  "column-gap": "Horizontal gap",
+};
+
+const selectValues: Record<string, string[]> = {
+  "font-weight": ["100", "200", "300", "400", "500", "600", "700", "800", "900"],
+  "flex-direction": ["row", "row-reverse", "column", "column-reverse"],
+  "justify-content": ["flex-start", "center", "flex-end", "space-between", "space-around", "space-evenly"],
+  "align-items": ["flex-start", "center", "flex-end", "stretch", "baseline"],
+};
+
+const pixelProperties = new Set([
+  "font-size", "border-radius", "border-width", "width", "height",
+  "padding-top", "padding-right", "padding-bottom", "padding-left",
+  "margin-top", "margin-right", "margin-bottom", "margin-left", "gap", "row-gap", "column-gap",
+]);
+const colorProperties = new Set(["color", "background-color", "border-color"]);
+
+function numericValue(value: string) {
+  const number = Number.parseFloat(value);
+  return Number.isFinite(number) ? String(Math.round(number * 100) / 100) : "0";
+}
+
+function rgbToHex(value: string) {
+  const match = value.match(/^rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/i);
+  if (!match) return /^#[0-9a-f]{6}$/i.test(value) ? value : "#000000";
+  return `#${[match[1], match[2], match[3]]
+    .map((part) => Math.max(0, Math.min(255, Number(part))).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+function changedDesign(design: DesignChange): DesignChange | null {
+  const declarations = design.declarations.filter((change) => change.value !== change.previousValue);
+  const text = design.text && design.text.value !== design.text.previousValue
+    ? { ...design.text }
+    : null;
+  return declarations.length > 0 || text ? { declarations, text } : null;
+}
+
+function DesignEditor({
+  design,
+  onChange,
+}: {
+  design: DesignChange;
+  onChange: (design: DesignChange) => void;
+}) {
+  const declarationMap = new Map(
+    design.declarations.map((declaration) => [declaration.property, declaration]),
+  );
+  const updateText = (value: string) => {
+    if (!design.text) return;
+    onChange({ ...design, text: { ...design.text, value: value.slice(0, 4000) } });
+  };
+  const updateDeclaration = (property: string, value: string) => {
+    onChange({
+      ...design,
+      declarations: design.declarations.map((declaration) =>
+        declaration.property === property
+          ? { ...declaration, value: value.slice(0, 1000) }
+          : declaration,
+      ),
+    });
+  };
+  const reset = () => onChange({
+    text: design.text ? { ...design.text, value: design.text.previousValue } : null,
+    declarations: design.declarations.map((declaration) => ({
+      ...declaration,
+      value: declaration.previousValue,
+    })),
+  });
+
+  return (
+    <div className="max-h-[min(20rem,48vh)] overflow-y-auto px-3 pb-2">
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-popover py-2">
+        <span className="text-xs font-medium text-muted-foreground">Element styles</span>
+        <button
+          type="button"
+          className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground"
+          onClick={reset}
+        >
+          Reset all
+        </button>
+      </div>
+      {designGroups.map((group) => {
+        const properties = group.properties.filter((property) =>
+          property === "text" ? Boolean(design.text) : declarationMap.has(property),
+        );
+        if (properties.length === 0) return null;
+        return (
+          <section key={group.title} className="border-b border-border py-2 last:border-b-0">
+            <h3 className="mb-1 text-[11px] font-medium text-muted-foreground">{group.title}</h3>
+            <div className="space-y-1">
+              {properties.map((property) => {
+                const value = property === "text"
+                  ? design.text?.value ?? ""
+                  : declarationMap.get(property)?.value ?? "";
+                const setValue = (next: string) => {
+                  if (property === "text") updateText(next);
+                  else updateDeclaration(property, next);
+                };
+                const options = selectValues[property];
+                return (
+                  <label
+                    key={property}
+                    className="grid min-h-8 grid-cols-[7.25rem_minmax(0,1fr)] items-center gap-2 text-xs"
+                  >
+                    <span className="truncate text-muted-foreground">{designLabels[property]}</span>
+                    {colorProperties.has(property) ? (
+                      <span className="grid grid-cols-[2rem_minmax(0,1fr)] gap-1.5">
+                        <input
+                          type="color"
+                          value={rgbToHex(value)}
+                          aria-label={`${designLabels[property]} picker`}
+                          className="h-7 w-8 cursor-pointer rounded-md border border-border bg-muted p-1"
+                          onChange={(event) => setValue(event.target.value)}
+                        />
+                        <input
+                          value={value}
+                          className="h-7 min-w-0 rounded-md border border-border bg-muted px-2 text-foreground outline-none focus:border-ring"
+                          onChange={(event) => setValue(event.target.value)}
+                        />
+                      </span>
+                    ) : options ? (
+                      <select
+                        value={value}
+                        className="h-7 min-w-0 rounded-md border border-border bg-muted px-2 text-foreground outline-none focus:border-ring"
+                        onChange={(event) => setValue(event.target.value)}
+                      >
+                        {!options.includes(value) ? <option value={value}>{value}</option> : null}
+                        {options.map((option) => <option key={option}>{option}</option>)}
+                      </select>
+                    ) : (
+                      <input
+                        type={property === "opacity" || pixelProperties.has(property) ? "number" : "text"}
+                        min={property === "opacity" ? 0 : undefined}
+                        max={property === "opacity" ? 1 : undefined}
+                        step={property === "opacity" ? 0.05 : pixelProperties.has(property) ? 1 : undefined}
+                        value={property === "opacity" || pixelProperties.has(property) ? numericValue(value) : value}
+                        className="h-7 min-w-0 rounded-md border border-border bg-muted px-2 text-foreground outline-none focus:border-ring"
+                        onChange={(event) => {
+                          const next = event.target.value;
+                          setValue(pixelProperties.has(property) ? `${next || "0"}px` : next);
+                        }}
+                      />
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToolbarActionProps) {
   const rpc = useRpc<typeof rpcContract>();
   const connectionState = useRealtimeConnectionState();
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const revisionRef = useRef(-1);
+  const editorIdRef = useRef<string | null>(null);
+  const previewRevisionRef = useRef(0);
+  const pollErrorRef = useRef(false);
+  const previewErrorRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(false);
+  const [editor, setEditor] = useState<EditorDraft | null>(null);
+  const [comment, setComment] = useState("");
+  const [design, setDesign] = useState<DesignChange | null>(null);
+  const [annotationCount, setAnnotationCount] = useState(0);
+  const [capturePending, setCapturePending] = useState(false);
+  const [captureFailed, setCaptureFailed] = useState(false);
+  const [overlayStyle, setOverlayStyle] = useState<React.CSSProperties>({ top: 52, right: 12 });
 
   const refreshStatus = useCallback(() => {
     void rpc
@@ -64,6 +269,87 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
   }, [rpc, tabId, threadId]);
 
   useEffect(refreshStatus, [connectionState, refreshStatus]);
+
+  useEffect(() => {
+    const position = () => {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setOverlayStyle({
+        top: rect.bottom + 8,
+        right: Math.max(12, window.innerWidth - rect.right),
+      });
+    };
+    position();
+    window.addEventListener("resize", position);
+    return () => window.removeEventListener("resize", position);
+  }, [active]);
+
+  useEffect(() => {
+    if (!active) {
+      revisionRef.current = -1;
+      editorIdRef.current = null;
+      setEditor(null);
+      return;
+    }
+    let disposed = false;
+    let running = false;
+    const poll = async () => {
+      if (disposed || running) return;
+      running = true;
+      try {
+        const live = await rpc.call("live", { threadId, afterRevision: revisionRef.current });
+        if (disposed) return;
+        revisionRef.current = Math.max(revisionRef.current, live.revision);
+        setAnnotationCount(live.annotations.length);
+        setCapturePending(live.capturePending);
+        setCaptureFailed(live.captureFailed);
+        if (live.editor?.id !== editorIdRef.current) {
+          editorIdRef.current = live.editor?.id ?? null;
+          setEditor(live.editor);
+          setComment(live.editor?.comment ?? "");
+          setDesign(live.editor?.designChange ?? null);
+          previewRevisionRef.current = 0;
+          previewErrorRef.current = false;
+        }
+        if (!live.active) setActive(false);
+        pollErrorRef.current = false;
+      } catch (error) {
+        if (!disposed && !pollErrorRef.current) {
+          pollErrorRef.current = true;
+          toast.error(error instanceof Error ? error.message : "Could not read annotation state");
+        }
+      } finally {
+        running = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 150);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [active, rpc, threadId]);
+
+  useEffect(() => {
+    if (!active || !editor || !design) return;
+    const previewRevision = ++previewRevisionRef.current;
+    const timer = window.setTimeout(() => {
+      void rpc.call("preview", {
+        threadId,
+        editorId: editor.id,
+        previewRevision,
+        designChange: design,
+      }).then(() => {
+        previewErrorRef.current = false;
+      }).catch((error) => {
+        if (!previewErrorRef.current) {
+          previewErrorRef.current = true;
+          toast.error(error instanceof Error ? error.message : "Could not preview design changes");
+        }
+      });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [active, design, editor, rpc, threadId]);
 
   useRealtime(
     "annotate-session",
@@ -102,19 +388,164 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
     }
   }, [active, rpc, tabId, threadId]);
 
+  const saveEditor = useCallback(async () => {
+    if (!editor || !design) return;
+    setBusy(true);
+    try {
+      const result = await rpc.call("save", {
+        threadId,
+        editorId: editor.id,
+        comment,
+        designChange: changedDesign(design),
+      });
+      if (!result.saved) throw new Error("The selected element is no longer available");
+      editorIdRef.current = null;
+      setEditor(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save annotation");
+    } finally {
+      setBusy(false);
+    }
+  }, [comment, design, editor, rpc, threadId]);
+
+  const cancelEditor = useCallback(async () => {
+    if (!editor) return;
+    try {
+      await rpc.call("cancelEditor", { threadId, editorId: editor.id });
+      editorIdRef.current = null;
+      setEditor(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not close annotation editor");
+    }
+  }, [editor, rpc, threadId]);
+
+  const deleteEditor = useCallback(async () => {
+    if (!editor?.annotationId) return;
+    setBusy(true);
+    try {
+      const result = await rpc.call("mutate", {
+        threadId,
+        annotationId: editor.annotationId,
+        action: "delete",
+      });
+      if (!result.changed) throw new Error("The annotation is no longer available");
+      editorIdRef.current = null;
+      setEditor(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not delete annotation");
+    } finally {
+      setBusy(false);
+    }
+  }, [editor, rpc, threadId]);
+
+  const send = useCallback(async () => {
+    setBusy(true);
+    try {
+      const result = await rpc.call("send", { threadId });
+      if (!result.sent) throw new Error("Finish the current annotation before sending");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not send annotations");
+    } finally {
+      setBusy(false);
+    }
+  }, [rpc, threadId]);
+
+  const designChanged = design ? changedDesign(design) : null;
+  const canSave = Boolean(editor && (comment.trim().length > 0 || designChanged));
+
   return (
-    <button
-      type="button"
-      className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 ${active ? "bg-card text-blue-500" : "text-muted-foreground hover:text-foreground"}`}
-      title={active ? "Stop annotating" : "Annotate this page"}
-      aria-label={active ? "Stop annotating this page" : "Annotate this page"}
-      aria-pressed={active}
-      disabled={busy}
-      onClick={() => void toggle()}
-    >
-      {annotateIcon}
-      <span className="hidden xl:inline">{active ? "Annotating" : "Annotate"}</span>
-    </button>
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 ${active ? "bg-card text-blue-500" : "text-muted-foreground hover:text-foreground"}`}
+        title={active ? "Stop annotating" : "Annotate this page"}
+        aria-label={active ? "Stop annotating this page" : "Annotate this page"}
+        aria-pressed={active}
+        disabled={busy}
+        onClick={() => void toggle()}
+      >
+        {annotateIcon}
+        <span className="hidden xl:inline">{active ? "Annotating" : "Annotate"}</span>
+      </button>
+      {active ? createPortal(
+        <div className="fixed z-[1200] flex w-[min(24rem,calc(100vw-24px))] flex-col items-end gap-2" style={overlayStyle}>
+          <div className="flex items-center gap-3 rounded-full bg-popover py-1.5 pl-4 pr-1.5 text-popover-foreground shadow-xl ring-1 ring-border">
+            <span className="text-sm font-semibold">Annotate Page</span>
+            <button
+              type="button"
+              className="h-8 rounded-full bg-primary px-4 text-sm font-semibold text-primary-foreground hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={busy || Boolean(editor) || annotationCount === 0 || capturePending}
+              title={captureFailed ? "Screenshot failed; retrying automatically" : undefined}
+              onClick={() => void send()}
+            >
+              Send
+            </button>
+          </div>
+          {editor && design ? (
+            <div
+              role="dialog"
+              aria-label={`Annotate ${editor.target}`}
+              className="w-full overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl"
+            >
+              <div className="border-b border-border px-3 py-2">
+                <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                  <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5">{editor.tag}</span>
+                  <span className="truncate">{editor.target}</span>
+                </div>
+                <textarea
+                  autoFocus
+                  value={comment}
+                  maxLength={4000}
+                  rows={2}
+                  placeholder="Add a comment…"
+                  aria-label="Annotation comment"
+                  className="mt-2 max-h-24 min-h-12 w-full resize-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                  onChange={(event) => setComment(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") void cancelEditor();
+                    if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canSave) {
+                      event.preventDefault();
+                      void saveEditor();
+                    }
+                  }}
+                />
+              </div>
+              <DesignEditor design={design} onChange={setDesign} />
+              <div className="flex items-center justify-end gap-2 border-t border-border bg-popover px-3 py-2">
+                {editor.annotationId ? (
+                  <button
+                    type="button"
+                    className="mr-auto h-8 rounded-md px-2 text-sm text-muted-foreground hover:bg-state-hover hover:text-destructive"
+                    disabled={busy}
+                    onClick={() => void deleteEditor()}
+                  >
+                    Delete
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="h-8 rounded-md px-3 text-sm text-muted-foreground hover:bg-state-hover hover:text-foreground"
+                  disabled={busy}
+                  onClick={() => void cancelEditor()}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="h-8 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={busy || !canSave}
+                  onClick={() => void saveEditor()}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>,
+        document.body,
+      ) : null}
+    </>
   );
 }
 
@@ -134,28 +565,26 @@ function useBrowserAnnotationsComposerSync() {
   const connectionState = useRealtimeConnectionState();
   const composerRef = useRef(composer);
   const revisionRef = useRef(-1);
-  const liveBatchRef = useRef<string | null>(null);
-  const requestedMentionRef = useRef<string | null>(null);
-  const observedMentionRef = useRef<string | null>(null);
+  const requestedMentionsRef = useRef(new Map<string, string>());
+  const observedMentionsRef = useRef(new Set<string>());
   const pollErrorRef = useRef(false);
   const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
   composerRef.current = composer;
 
-  const detach = useCallback(() => {
+  const detach = useCallback((batchId: string) => {
     if (!threadId) return;
-    const mentions = browserMentions(threadId);
+    const mentions = browserMentions(threadId).filter((mention) => mention.id === batchId);
     for (const mention of [...mentions].sort((left, right) => right.from - left.from)) {
       composerRef.current.updateText((text) => removeStructuredMentionText(text, mention));
     }
-    requestedMentionRef.current = null;
-    observedMentionRef.current = null;
+    requestedMentionsRef.current.delete(batchId);
+    observedMentionsRef.current.delete(batchId);
   }, [threadId]);
 
   useEffect(() => {
     revisionRef.current = -1;
-    liveBatchRef.current = null;
-    requestedMentionRef.current = null;
-    observedMentionRef.current = null;
+    requestedMentionsRef.current = new Map();
+    observedMentionsRef.current = new Set();
     pollErrorRef.current = false;
   }, [threadId]);
 
@@ -172,50 +601,30 @@ function useBrowserAnnotationsComposerSync() {
           afterRevision: revisionRef.current,
         });
         if (disposed) return;
-        const revisionChanged = live.revision > revisionRef.current;
-        if (live.batchId !== liveBatchRef.current) {
-          detach();
-          liveBatchRef.current = live.batchId;
-          revisionRef.current = -1;
-        }
         revisionRef.current = Math.max(revisionRef.current, live.revision);
 
-        if (live.batchId && live.annotations.length > 0) {
-          const label = pluralizeAnnotations(live.annotations.length);
-          const mentions = browserMentions(threadId);
-          const attached = mentions.find((mention) => mention.id === live.batchId);
-          if (attached) {
-            observedMentionRef.current = live.batchId;
-            requestedMentionRef.current = null;
-          }
-          if (attached && attached.label !== label) {
-            composerRef.current.updateText((text) =>
-              removeStructuredMentionText(text, attached),
-            );
-            composerRef.current.insertMention({
-              provider: "browser-comments",
-              id: live.batchId,
-              label,
-            });
-            requestedMentionRef.current = `${live.batchId}:${label}`;
-          } else if (
-            !attached &&
-            observedMentionRef.current === live.batchId &&
-            requestedMentionRef.current === null
-          ) {
-            observedMentionRef.current = null;
-            requestedMentionRef.current = null;
-            await rpc.call("discard", { threadId, batchId: live.batchId });
-          } else if (!attached && requestedMentionRef.current !== `${live.batchId}:${label}`) {
-            composerRef.current.insertMention({
-              provider: "browser-comments",
-              id: live.batchId,
-              label,
-            });
-            requestedMentionRef.current = `${live.batchId}:${label}`;
-          }
-        } else if (!live.active || revisionChanged) {
-          detach();
+        if (!composerDraftReady.has(threadId)) return;
+        const mentions = browserMentions(threadId);
+        const plan = planMentionReconciliation(
+          mentions,
+          live.batches.map((batch) => ({ id: batch.id, label: pluralizeAnnotations(batch.count) })),
+          observedMentionsRef.current,
+          requestedMentionsRef.current,
+        );
+        observedMentionsRef.current = plan.observed;
+        requestedMentionsRef.current = plan.requested;
+        for (const mention of [...plan.remove].sort((left, right) => right.from - left.from)) {
+          composerRef.current.updateText((text) => removeStructuredMentionText(text, mention));
+        }
+        for (const batch of plan.insert) {
+          composerRef.current.insertMention({
+            provider: "browser-comments",
+            id: batch.id,
+            label: batch.label,
+          });
+        }
+        for (const batchId of plan.discard) {
+          await rpc.call("discard", { threadId, batchId });
         }
         pollErrorRef.current = false;
       } catch (error) {
@@ -241,7 +650,7 @@ function useBrowserAnnotationsComposerSync() {
       (rawPayload) => {
         const payload = rawPayload as SessionEvent;
         if (!threadId || payload.threadId !== threadId) return;
-        if (payload.status === "sent") detach();
+        if (payload.status === "sent" && payload.batchId) detach(payload.batchId);
       },
       [detach, threadId],
     ),
@@ -475,7 +884,10 @@ export default definePluginApp((app) => {
     scopes: ["thread"],
     richText: {
       onDraftChange(draft: ComposerStructuredDraft, view: ComposerView) {
-        if (view.scope.kind === "thread") composerDrafts.set(view.scope.threadId, draft);
+        if (view.scope.kind === "thread") {
+          composerDrafts.set(view.scope.threadId, draft);
+          composerDraftReady.add(view.scope.threadId);
+        }
       },
     },
   });

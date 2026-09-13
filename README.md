@@ -6,7 +6,7 @@
 
 1. Откройте страницу во встроенном Browser.
 2. Нажмите **Annotate** прямо в панели Browser рядом с адресной строкой.
-3. Выберите DOM-элемент, напишите комментарий и сохраните его.
+3. Выберите DOM-элемент — под Browser toolbar откроется компактный trusted editor. Напишите комментарий, при необходимости измените параметры в прокручиваемом списке категорий и сохраните.
 4. После каждого сохранения banner-плашка над полем composer сразу обновляет число и список аннотаций. Список раскрывается по наведению; из него можно изменить или удалить отдельный комментарий либо убрать весь batch.
 5. Повторите это для остальных элементов. Маркер на странице также можно открыть, чтобы изменить или удалить комментарий.
 6. Нажмите **Send** в компактной панели **Annotate Page**.
@@ -27,20 +27,20 @@
 - тема интерфейса в момент сохранения;
 - отдельный JPEG для каждого комментария, снятый сразу после сохранения выделения.
 
-Текст и изображения страницы явно помечены как недоверенные page evidence. Editor исполняется в отдельном CDP isolated world и закрытом Shadow DOM, поэтому страница не может прочитать или подменить пользовательский комментарий и Send intent. Только поле `Comment` считается пользовательской инструкцией.
+Текст и изображения страницы явно помечены как недоверенные page evidence. Страница отвечает только за selection outline, markers и design preview в CDP isolated world. Поле комментария, значения controls, Save и Send живут в renderer BB вне page webContents, поэтому страница не получает пользовательский ввод и не владеет send intent. Только подтверждённый в trusted editor комментарий считается пользовательской инструкцией.
 
 ## Поток данных
 
 ```text
 Browser toolbar action
   -> server resolves the active thread/tab to a desktop Browser instance
-  -> host acquires the tab and injects the picker into an isolated world
-  -> trusted editor lives in a closed Shadow DOM; the page supplies only untrusted element evidence
-  -> server persists every saved revision as the authoritative draft
+  -> host acquires the tab and injects only picker/markers into an isolated world
+  -> the page supplies untrusted element evidence to a trusted BB editor
+  -> Save commits through server RPC and persists before the UI confirms success
   -> every saved or edited comment queues a versioned CDP screenshot
   -> composer polls the live revision and renders the current annotation list
   -> edit/delete actions update the same page overlay
-  -> reload reinjects the picker from the persisted draft; navigation pauses the previous page batch
+  -> reload reinjects the picker from the persisted draft; hard and SPA navigation pause the previous page batch
   -> Send drains the capture queue and stores current-version screenshots in thread storage
   -> batch metadata is persisted beside the screenshots for message hover details
   -> server sends one Browser comments mention to the current thread
