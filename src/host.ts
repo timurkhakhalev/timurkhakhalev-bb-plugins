@@ -182,8 +182,7 @@ const PAGE_SCRIPT = `
     const known = [...state.items, ...(formDraft ? [formDraft] : [])];
     for (const item of known) {
       if (!item.designChange || !item.designChange.text) continue;
-      const element = resolveElement(item);
-      if (element) setDirectText(element, item.designChange.text.previousValue);
+      restoreDesignText(item);
     }
     for (const element of taggedElements) element.removeAttribute("data-bb-annotation-design");
     taggedElements.clear();
