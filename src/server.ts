@@ -9,14 +9,14 @@ type BrowserScope = {
   threadId: string;
 };
 
-type PendingBatch = {
+export type PendingBatch = {
   id: string;
   threadId: string;
   createdAt: number;
   sent: boolean;
   batch: Batch;
-  images: Array<{ annotationId: string; path: string }>;
-  previewDataUrl: string | null;
+  images: Array<{ annotationId: string; version: number; path: string }>;
+  previewDataUrls: Map<string, string>;
 };
 
 type ActiveSession = {
@@ -26,8 +26,8 @@ type ActiveSession = {
   scope: BrowserScope;
   wsEndpoint: string | null;
   batchId: string;
-  screenshots: Map<string, Screenshot>;
-  imagePaths: Map<string, string>;
+  screenshots: Map<string, { version: number; image: Screenshot }>;
+  imagePaths: Map<string, { version: number; path: string }>;
   stagedRevision: number;
   finishing: Promise<void> | null;
 };
@@ -116,6 +116,15 @@ export function buildBatchMentionInput(pluginId: string, item: PendingBatch) {
   };
 }
 
+export function missingCaptureAnnotationIds(item: PendingBatch): string[] {
+  const versions = new Map(
+    item.images.map((image) => [image.annotationId, image.version] as const),
+  );
+  return item.batch.annotations
+    .filter((annotation) => versions.get(annotation.id) !== annotation.version)
+    .map((annotation) => annotation.id);
+}
+
 export default function browserAnnotate(bb: BbPluginApi): void {
   const host = bb.hosts.experimental_client({ contract: hostContract });
   const sessions = new Map<string, ActiveSession>();
@@ -127,11 +136,6 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       if (item.createdAt < cutoff) pending.delete(id);
     }
   };
-
-  const latestPendingBatch = (threadId: string) =>
-    [...pending.values()]
-      .filter((item) => item.threadId === threadId && !item.sent)
-      .sort((left, right) => right.createdAt - left.createdAt)[0] ?? null;
 
   async function findScope(threadId: string, tabId: string) {
     const desktop = bb.sdk.experimental_desktopBrowsers;
@@ -211,6 +215,26 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     return path;
   }
 
+  const batchThreadKey = (batchId: string) => `browser-comments:batch:${batchId}:thread`;
+  const draftBatchKey = (threadId: string) => `browser-comments:thread:${threadId}:draft`;
+
+  async function draftBatchIds(threadId: string): Promise<string[]> {
+    const value = await bb.storage.kv.get<unknown>(draftBatchKey(threadId));
+    return Array.isArray(value)
+      ? value.filter((id): id is string => typeof id === "string")
+      : [];
+  }
+
+  async function clearDraftPointer(threadId: string, batchId?: string): Promise<void> {
+    if (!batchId) {
+      await bb.storage.kv.delete(draftBatchKey(threadId));
+      return;
+    }
+    const next = (await draftBatchIds(threadId)).filter((id) => id !== batchId);
+    if (next.length === 0) await bb.storage.kv.delete(draftBatchKey(threadId));
+    else await bb.storage.kv.set(draftBatchKey(threadId), next);
+  }
+
   async function persistBatch(item: PendingBatch): Promise<void> {
     const location = await bb.sdk.threads.storageLocation({ threadId: item.threadId });
     await bb.sdk.files.write({
@@ -220,18 +244,34 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         id: item.id,
         threadId: item.threadId,
         createdAt: item.createdAt,
+        sent: item.sent,
         batch: item.batch,
         images: item.images,
       }),
       contentEncoding: "utf8",
       createParents: true,
     });
+    await bb.storage.kv.set(batchThreadKey(item.id), item.threadId);
+    if (item.sent) await clearDraftPointer(item.threadId, item.id);
+    else {
+      const ids = (await draftBatchIds(item.threadId)).filter((id) => id !== item.id);
+      await bb.storage.kv.set(draftBatchKey(item.threadId), [...ids, item.id]);
+    }
   }
 
-  async function loadBatch(threadId: string, batchId: string): Promise<PendingBatch | null> {
+  async function loadBatch(
+    batchId: string,
+    expectedThreadId?: string,
+  ): Promise<PendingBatch | null> {
     const cached = pending.get(batchId);
-    if (cached?.threadId === threadId) return cached;
+    if (cached && (!expectedThreadId || cached.threadId === expectedThreadId)) return cached;
     try {
+      const indexedThreadId = await bb.storage.kv.get<unknown>(batchThreadKey(batchId));
+      const threadId = expectedThreadId ??
+        (typeof indexedThreadId === "string" ? indexedThreadId : null);
+      if (!threadId || (expectedThreadId && indexedThreadId && indexedThreadId !== threadId)) {
+        return null;
+      }
       const location = await bb.sdk.threads.storageLocation({ threadId });
       const stored = await bb.sdk.files.read({
         hostId: location.hostId,
@@ -245,31 +285,41 @@ export default function browserAnnotate(bb: BbPluginApi): void {
               typeof image === "object" &&
               image !== null &&
               typeof (image as Record<string, unknown>).annotationId === "string" &&
+              typeof (image as Record<string, unknown>).version === "number" &&
               typeof (image as Record<string, unknown>).path === "string"
             ) {
-              return [image as { annotationId: string; path: string }];
+              return [image as { annotationId: string; version: number; path: string }];
             }
             return [];
           })
         : [];
-      let previewDataUrl: string | null = null;
-      if (images[0]) {
-        const preview = await bb.sdk.files.read({
-          hostId: location.hostId,
-          path: images[0].path,
-        });
-        if (preview.contentEncoding === "base64") {
-          previewDataUrl = `data:${preview.mimeType ?? "image/jpeg"};base64,${preview.content}`;
+      const createdAt = typeof raw.createdAt === "number" ? raw.createdAt : Date.now();
+      if (createdAt < Date.now() - 24 * 60 * 60_000) return null;
+      const previewDataUrls = new Map<string, string>();
+      for (const image of images) {
+        try {
+          const preview = await bb.sdk.files.read({
+            hostId: location.hostId,
+            path: image.path,
+          });
+          if (preview.contentEncoding === "base64") {
+            previewDataUrls.set(
+              image.annotationId,
+              `data:${preview.mimeType ?? "image/jpeg"};base64,${preview.content}`,
+            );
+          }
+        } catch {
+          // The text context remains useful if an old image was removed externally.
         }
       }
       const item: PendingBatch = {
         id: batchId,
         threadId,
-        createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
-        sent: true,
+        createdAt,
+        sent: raw.sent === true,
         batch,
         images,
-        previewDataUrl,
+        previewDataUrls,
       };
       pending.set(batchId, item);
       return item;
@@ -278,26 +328,65 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     }
   }
 
+  async function latestPendingBatch(threadId: string): Promise<PendingBatch | null> {
+    const cached = [...pending.values()]
+      .filter((item) => item.threadId === threadId && !item.sent)
+      .sort((left, right) => right.createdAt - left.createdAt)[0];
+    if (cached) return cached;
+    for (const batchId of (await draftBatchIds(threadId)).reverse()) {
+      const item = await loadBatch(batchId, threadId);
+      if (item && !item.sent) return item;
+      await clearDraftPointer(threadId, batchId);
+    }
+    return null;
+  }
+
+  async function loadPendingBatches(threadId: string): Promise<void> {
+    for (const batchId of await draftBatchIds(threadId)) {
+      const item = await loadBatch(batchId, threadId);
+      if (!item || item.sent) await clearDraftPointer(threadId, batchId);
+    }
+  }
+
+  function applyCaptures(
+    session: ActiveSession,
+    captures: Array<{ annotationId: string; version: number; image: Screenshot }>,
+  ) {
+    for (const capture of captures) {
+      const current = session.screenshots.get(capture.annotationId);
+      if (!current || capture.version >= current.version) {
+        session.screenshots.set(capture.annotationId, {
+          version: capture.version,
+          image: capture.image,
+        });
+      }
+    }
+  }
+
   async function stageBatch(
     session: ActiveSession,
     batch: Batch,
-    previewDataUrl: string | null,
   ): Promise<PendingBatch | null> {
     const existing = pending.get(session.batchId);
     if (existing?.sent) return existing;
     if (batch.annotations.length === 0) {
       pending.delete(session.batchId);
+      await clearDraftPointer(session.scope.threadId, session.batchId);
       return null;
     }
+    const liveIds = new Set(batch.annotations.map((annotation) => annotation.id));
+    for (const id of session.imagePaths.keys()) {
+      if (!liveIds.has(id)) session.imagePaths.delete(id);
+    }
     for (const annotation of batch.annotations) {
-      if (session.imagePaths.has(annotation.id)) continue;
-      const screenshot = session.screenshots.get(annotation.id);
-      if (!screenshot) continue;
+      const capture = session.screenshots.get(annotation.id);
+      const stored = session.imagePaths.get(annotation.id);
+      if (!capture || capture.version !== annotation.version || stored?.version === capture.version) {
+        continue;
+      }
       try {
-        session.imagePaths.set(
-          annotation.id,
-          await storeScreenshot(session.scope.threadId, annotation.id, screenshot),
-        );
+        const path = await storeScreenshot(session.scope.threadId, annotation.id, capture.image);
+        session.imagePaths.set(annotation.id, { version: capture.version, path });
       } catch (error) {
         bb.log.warn(
           `Could not store annotation screenshot: ${error instanceof Error ? error.message : String(error)}`,
@@ -312,14 +401,28 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       sent: false,
       batch,
       images: [],
-      previewDataUrl,
+      previewDataUrls: new Map(),
     };
     item.batch = batch;
     item.images = batch.annotations.flatMap((annotation) => {
-      const path = session.imagePaths.get(annotation.id);
-      return path ? [{ annotationId: annotation.id, path }] : [];
+      const image = session.imagePaths.get(annotation.id);
+      return image?.version === annotation.version
+        ? [{ annotationId: annotation.id, version: image.version, path: image.path }]
+        : [];
     });
-    item.previewDataUrl = previewDataUrl ?? item.previewDataUrl;
+    const previewDataUrls = new Map(item.previewDataUrls);
+    for (const id of previewDataUrls.keys()) {
+      if (!liveIds.has(id)) previewDataUrls.delete(id);
+    }
+    for (const [annotationId, dataUrl] of batch.annotations.flatMap((annotation) => {
+        const capture = session.screenshots.get(annotation.id);
+        return capture?.version === annotation.version
+          ? [[annotation.id, `data:${capture.image.mimeType};base64,${capture.image.base64}`] as const]
+          : [];
+      })) {
+      previewDataUrls.set(annotationId, dataUrl);
+    }
+    item.previewDataUrls = previewDataUrls;
     pending.set(item.id, item);
     await persistBatch(item).catch((error) => {
       bb.log.warn(
@@ -327,6 +430,12 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       );
     });
     return item;
+  }
+
+  function assertCompleteCaptures(item: PendingBatch): void {
+    if (missingCaptureAnnotationIds(item).length > 0) {
+      throw new Error("Browser annotations are still capturing. Try sending again.");
+    }
   }
 
   function finishSession(session: ActiveSession, item: PendingBatch): Promise<void> {
@@ -353,12 +462,102 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     return session.finishing;
   }
 
+  async function sendSessionBatch(
+    session: ActiveSession,
+    batch: Batch,
+  ): Promise<PendingBatch> {
+    const item = await stageBatch(session, batch);
+    if (!item) throw new Error("Add at least one annotation before sending");
+    assertCompleteCaptures(item);
+    await bb.sdk.threads.send({
+      threadId: item.threadId,
+      mode: "steer-if-active",
+      input: [buildBatchMentionInput(bb.pluginId, item)],
+    });
+    if (!item.sent) {
+      item.sent = true;
+      await persistBatch(item);
+    }
+    await finishSession(session, item);
+    return item;
+  }
+
+  async function stopSession(session: ActiveSession): Promise<void> {
+    if (session.wsEndpoint) {
+      await host.call(
+        "cleanupSession",
+        { wsEndpoint: session.wsEndpoint },
+        { hostId: session.hostId, timeoutMs: 15_000 },
+      ).catch(() => undefined);
+    }
+    if (sessions.get(session.scope.threadId) === session) {
+      sessions.delete(session.scope.threadId);
+    }
+    session.controller.abort();
+  }
+
+  async function refreshSession(session: ActiveSession, afterRevision: number) {
+    if (!session.wsEndpoint) return null;
+    let result = await host.call(
+      "readSession",
+      { wsEndpoint: session.wsEndpoint, afterRevision },
+      { hostId: session.hostId, timeoutMs: 30_000 },
+    );
+    if (result.status === "missing") {
+      const draft = pending.get(session.batchId) ??
+        await loadBatch(session.batchId, session.scope.threadId) ??
+        await latestPendingBatch(session.scope.threadId);
+      const restarted = await host.call(
+        "startSession",
+        { wsEndpoint: session.wsEndpoint, batch: draft?.sent ? null : draft?.batch ?? null },
+        { hostId: session.hostId, timeoutMs: 15_000 },
+      );
+      if (draft && restarted.restored) {
+        session.batchId = draft.id;
+        session.imagePaths = new Map(
+          draft.images.map((image) => [
+            image.annotationId,
+            { version: image.version, path: image.path },
+          ]),
+        );
+        session.stagedRevision = -1;
+      } else if (draft) {
+        session.batchId = `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`;
+        session.screenshots.clear();
+        session.imagePaths.clear();
+        session.stagedRevision = -1;
+      }
+      result = await host.call(
+        "readSession",
+        { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
+        { hostId: session.hostId, timeoutMs: 30_000 },
+      );
+    }
+    applyCaptures(session, result.captures);
+    if (result.batch?.annotations.length === 0 && pending.has(session.batchId)) {
+      pending.delete(session.batchId);
+      await clearDraftPointer(session.scope.threadId, session.batchId);
+    }
+    if (
+      result.batch &&
+      result.batch.annotations.length > 0 &&
+      (result.revision > session.stagedRevision ||
+        result.captures.length > 0 ||
+        !pending.has(session.batchId))
+    ) {
+      await stageBatch(session, result.batch);
+      session.stagedRevision = Math.max(session.stagedRevision, result.revision);
+    }
+    return result;
+  }
+
   bb.ui.registerMentionProvider({
     id: "browser-comments",
     label: "Browser comments",
     async search(context) {
       if (!context.threadId) return [];
       prunePending();
+      await loadPendingBatches(context.threadId);
       return [...pending.values()]
         .filter((item) => item.threadId === context.threadId && !item.sent)
         .map((item) => ({
@@ -370,31 +569,20 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     },
     async resolve(itemId) {
       prunePending();
-      let item = pending.get(itemId);
+      let item = pending.get(itemId) ?? await loadBatch(itemId);
       if (!item) throw new Error("Browser comments expired or were removed");
       const session = sessions.get(item.threadId);
       if (session?.batchId === item.id && session.wsEndpoint) {
-        const latest = await host.call(
-          "readSession",
-          { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
-          { hostId: session.hostId, timeoutMs: 15_000 },
-        );
-        if (latest.capture) {
-          session.screenshots.set(latest.capture.annotationId, latest.capture.image);
-        }
+        const latest = await refreshSession(session, -1);
+        if (!latest) throw new Error("Browser annotation session is not ready");
         if (latest.batch) {
-          const latestItem = await stageBatch(
-            session,
-            latest.batch,
-            latest.preview
-              ? `data:${latest.preview.mimeType};base64,${latest.preview.base64}`
-              : null,
-          );
+          const latestItem = await stageBatch(session, latest.batch);
           if (!latestItem) throw new Error("Browser comments were removed before sending");
           item = latestItem;
           session.stagedRevision = Math.max(session.stagedRevision, latest.revision);
         }
       }
+      assertCompleteCaptures(item);
       const annotationById = new Map(
         item.batch.annotations.map((annotation, index) => [annotation.id, { annotation, index }]),
       );
@@ -414,6 +602,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         }),
       };
       item.sent = true;
+      await persistBatch(item);
       if (session?.batchId === item.id) void finishSession(session, item);
       return resolved;
     },
@@ -422,8 +611,9 @@ export default function browserAnnotate(bb: BbPluginApi): void {
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
     async start({ threadId, tabId }) {
       const scope = await findScope(threadId, tabId);
-      sessions.get(threadId)?.controller.abort();
-      const resumed = latestPendingBatch(threadId);
+      const previous = sessions.get(threadId);
+      if (previous) await stopSession(previous);
+      const resumed = await latestPendingBatch(threadId);
       const controller = new AbortController();
       const session: ActiveSession = {
         controller,
@@ -434,7 +624,10 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         batchId: resumed?.id ?? `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`,
         screenshots: new Map(),
         imagePaths: new Map(
-          resumed?.images.map((image) => [image.annotationId, image.path]) ?? [],
+          resumed?.images.map((image) => [
+            image.annotationId,
+            { version: image.version, path: image.path },
+          ]) ?? [],
         ),
         stagedRevision: -1,
         finishing: null,
@@ -443,7 +636,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       await bb.sdk.experimental_desktopBrowsers.revealTab({ ...scope, tabId });
 
       void withLease(scope, tabId, controller.signal, async (wsEndpoint) => {
-        await host.call(
+        const started = await host.call(
           "startSession",
           { wsEndpoint, batch: resumed?.batch ?? null },
           {
@@ -452,6 +645,10 @@ export default function browserAnnotate(bb: BbPluginApi): void {
             timeoutMs: 15_000,
           },
         );
+        if (resumed && !started.restored) {
+          session.batchId = `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`;
+          session.imagePaths.clear();
+        }
         session.wsEndpoint = wsEndpoint;
         if (!controller.signal.aborted) {
           await new Promise<void>((resolve) => {
@@ -490,32 +687,16 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       const session = sessions.get(threadId);
       if (!session) return { cancelled: false };
       if (session.wsEndpoint) {
-        const latest = await host.call(
-          "readSession",
-          { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
-          { hostId: session.hostId, timeoutMs: 15_000 },
-        ).catch(() => null);
-        if (latest?.capture) {
-          session.screenshots.set(latest.capture.annotationId, latest.capture.image);
+        const latest = await refreshSession(session, -1).catch(() => null);
+        if (latest?.status === "sent" && latest.batch) {
+          await sendSessionBatch(session, latest.batch);
+          return { cancelled: false };
         }
         if (latest?.batch) {
-          await stageBatch(
-            session,
-            latest.batch,
-            latest.preview
-              ? `data:${latest.preview.mimeType};base64,${latest.preview.base64}`
-              : null,
-          );
+          await stageBatch(session, latest.batch);
         }
-        if (sessions.get(threadId) === session) sessions.delete(threadId);
-        await host.call(
-          "cleanupSession",
-          { wsEndpoint: session.wsEndpoint },
-          { hostId: session.hostId, timeoutMs: 15_000 },
-        ).catch(() => undefined);
       }
-      if (sessions.get(threadId) === session) sessions.delete(threadId);
-      session.controller.abort();
+      await stopSession(session);
       return { cancelled: true };
     },
 
@@ -526,6 +707,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
     async pending({ threadId }) {
       prunePending();
+      await loadPendingBatches(threadId);
       return {
         batches: [...pending.values()]
           .filter((item) => item.threadId === threadId)
@@ -540,7 +722,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     },
 
     async stage({ threadId, batchId }) {
-      const item = pending.get(batchId);
+      const item = pending.get(batchId) ?? await loadBatch(batchId, threadId);
       if (!item || item.threadId !== threadId) return { staged: false };
       return { staged: true };
     },
@@ -548,7 +730,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     async live({ threadId, afterRevision }) {
       const session = sessions.get(threadId);
       if (!session) {
-        const paused = latestPendingBatch(threadId);
+        const paused = await latestPendingBatch(threadId);
         return {
           active: false,
           revision: Math.max(0, afterRevision),
@@ -560,7 +742,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
                 target: annotation.target,
                 comment: annotation.comment,
                 designChange: annotation.designChange,
-                previewDataUrl: paused.previewDataUrl,
+                previewDataUrl: paused.previewDataUrls.get(annotation.id) ?? null,
               }))
             : [],
         };
@@ -573,61 +755,35 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           annotations: [],
         };
       }
-      let result = await host.call(
-        "readSession",
-        { wsEndpoint: session.wsEndpoint, afterRevision },
-        { hostId: session.hostId, timeoutMs: 15_000 },
-      );
-      if (!result.batch && result.revision < afterRevision) {
-        result = await host.call(
-          "readSession",
-          { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
-          { hostId: session.hostId, timeoutMs: 15_000 },
-        );
-      }
-      if (result.capture) {
-        session.screenshots.set(result.capture.annotationId, result.capture.image);
-      }
+      const result = await refreshSession(session, afterRevision);
+      if (!result) throw new Error("Browser annotation session is not ready");
       if (result.status === "cancelled") {
-        pending.delete(session.batchId);
-        if (sessions.get(threadId) === session) sessions.delete(threadId);
-        session.controller.abort();
+        await stopSession(session);
+        const paused = await latestPendingBatch(threadId);
         bb.realtime.publish("annotate-session", {
           threadId,
           tabId: session.tabId,
           status: "cancelled",
-          count: 0,
+          count: paused?.batch.annotations.length ?? 0,
         });
         return {
           active: false,
           revision: result.revision,
-          batchId: null,
-          annotations: [],
+          batchId: paused?.id ?? null,
+          annotations: paused
+            ? paused.batch.annotations.map((annotation) => ({
+                id: annotation.id,
+                tag: annotation.tag,
+                target: annotation.target,
+                comment: annotation.comment,
+                designChange: annotation.designChange,
+                previewDataUrl: paused.previewDataUrls.get(annotation.id) ?? null,
+              }))
+            : [],
         };
       }
       if (result.status === "sent" && result.batch) {
-        const item = await stageBatch(
-          session,
-          result.batch,
-          result.preview
-            ? `data:${result.preview.mimeType};base64,${result.preview.base64}`
-            : null,
-        );
-        if (!item) throw new Error("Add at least one annotation before sending");
-        try {
-          await bb.sdk.threads.send({
-            threadId,
-            mode: "steer-if-active",
-            input: [buildBatchMentionInput(bb.pluginId, item)],
-          });
-          if (!item.sent) {
-            item.sent = true;
-          }
-          await finishSession(session, item);
-        } catch (error) {
-          pending.delete(item.id);
-          throw error;
-        }
+        await sendSessionBatch(session, result.batch);
         return {
           active: false,
           revision: result.revision,
@@ -643,17 +799,25 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           annotations: [],
         };
       }
-      const previewDataUrl = result.preview
-        ? `data:${result.preview.mimeType};base64,${result.preview.base64}`
-        : null;
-      if (
-        result.revision > session.stagedRevision ||
-        Boolean(result.capture) ||
-        !pending.has(session.batchId)
-      ) {
-        await stageBatch(session, result.batch, previewDataUrl);
-        session.stagedRevision = result.revision;
+      if (result.batch.annotations.length === 0) {
+        const paused = await latestPendingBatch(threadId);
+        return {
+          active: true,
+          revision: result.revision,
+          batchId: paused?.id ?? session.batchId,
+          annotations: paused
+            ? paused.batch.annotations.map((annotation) => ({
+                id: annotation.id,
+                tag: annotation.tag,
+                target: annotation.target,
+                comment: annotation.comment,
+                designChange: annotation.designChange,
+                previewDataUrl: paused.previewDataUrls.get(annotation.id) ?? null,
+              }))
+            : [],
+        };
       }
+      const item = pending.get(session.batchId) ?? await stageBatch(session, result.batch);
       return {
         active: true,
         revision: result.revision,
@@ -664,7 +828,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           target: annotation.target,
           comment: annotation.comment,
           designChange: annotation.designChange,
-          previewDataUrl,
+          previewDataUrl: item?.previewDataUrls.get(annotation.id) ?? null,
         })),
       };
     },
@@ -688,28 +852,16 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           { hostId: session.hostId, timeoutMs: 15_000 },
         );
         if (changed.changed && action === "delete") {
-          const latest = await host.call(
-            "readSession",
-            { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
-            { hostId: session.hostId, timeoutMs: 15_000 },
-          );
-          if (latest.capture) {
-            session.screenshots.set(latest.capture.annotationId, latest.capture.image);
-          }
+          const latest = await refreshSession(session, -1);
+          if (!latest) throw new Error("Browser annotation session is not ready");
           if (latest.batch) {
-            await stageBatch(
-              session,
-              latest.batch,
-              latest.preview
-                ? `data:${latest.preview.mimeType};base64,${latest.preview.base64}`
-                : null,
-            );
+            await stageBatch(session, latest.batch);
             session.stagedRevision = Math.max(session.stagedRevision, latest.revision);
           }
         }
         return changed;
       }
-      const item = [...pending.values()].find(
+      const item = (await latestPendingBatch(threadId)) ?? [...pending.values()].find(
         (candidate) =>
           !candidate.sent &&
           candidate.threadId === threadId &&
@@ -722,6 +874,8 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           (annotation) => annotation.id !== annotationId,
         );
         item.images = item.images.filter((image) => image.annotationId !== annotationId);
+        item.previewDataUrls.delete(annotationId);
+        await persistBatch(item);
       } else {
         return { changed: false };
       }
@@ -730,7 +884,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
     async batch({ threadId, batchId }) {
       prunePending();
-      const item = await loadBatch(threadId, batchId);
+      const item = await loadBatch(batchId, threadId);
       if (!item) return { editable: false, annotations: [] };
       return {
         editable: sessions.get(threadId)?.batchId === batchId,
@@ -740,14 +894,14 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           target: annotation.target,
           comment: annotation.comment,
           designChange: annotation.designChange,
-          previewDataUrl: item.previewDataUrl,
+          previewDataUrl: item.previewDataUrls.get(annotation.id) ?? null,
         })),
       };
     },
 
     async draft({ threadId }) {
       prunePending();
-      const item = latestPendingBatch(threadId);
+      const item = await latestPendingBatch(threadId);
       if (!item) return { batchId: null, annotations: [] };
       return {
         batchId: item.id,
@@ -757,22 +911,19 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           target: annotation.target,
           comment: annotation.comment,
           designChange: annotation.designChange,
-          previewDataUrl: item.previewDataUrl,
+          previewDataUrl: item.previewDataUrls.get(annotation.id) ?? null,
         })),
       };
     },
 
-    async discard({ threadId }) {
+    async discard({ threadId, batchId }) {
       const session = sessions.get(threadId);
-      if (session) sessions.delete(threadId);
-      session?.controller.abort();
-      let discarded = Boolean(session);
-      for (const [id, item] of pending) {
-        if (item.threadId !== threadId || item.sent) continue;
-        pending.delete(id);
-        discarded = true;
-      }
-      return { discarded };
+      if (session?.batchId === batchId) await stopSession(session);
+      const item = pending.get(batchId) ?? await loadBatch(batchId, threadId);
+      if (!item || item.sent) return { discarded: false };
+      pending.delete(batchId);
+      await clearDraftPointer(threadId, batchId);
+      return { discarded: true };
     },
   };
 

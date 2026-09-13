@@ -24,13 +24,22 @@ const PAGE_SCRIPT = `
     lastY: -1,
   };
   const restoreBatch = window.__bbAnnotateRestoreBatch || null;
+  const shouldRestore = Boolean(
+    restoreBatch && restoreBatch.url === location.href && Array.isArray(restoreBatch.annotations),
+  );
   window.__bbAnnotateRestoreBatch = null;
   window[NS] = state;
   const previousCursor = document.documentElement.style.cursor;
+  const rootHost = document.createElement("div");
+  rootHost.id = "__bbAnnRoot";
+  rootHost.style.cssText = "position:fixed;inset:0;z-index:2147483647;pointer-events:none";
+  document.documentElement.appendChild(rootHost);
+  const uiRoot = rootHost.attachShadow({ mode: "closed" });
 
   const css =
+    ":host{all:initial}" +
     "#__bbAnnBar{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:2147483646;" +
-    "display:flex;align-items:center;gap:12px;padding:8px 10px 8px 16px;border-radius:999px;" +
+    "pointer-events:auto;display:flex;align-items:center;gap:12px;padding:8px 10px 8px 16px;border-radius:999px;" +
     "background:rgba(20,22,28,.96);color:#e8eaf0;font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;" +
     "box-shadow:0 6px 24px rgba(0,0,0,.45);user-select:none}" +
     "#__bbAnnBar .title{font-weight:650}" +
@@ -45,7 +54,7 @@ const PAGE_SCRIPT = `
     ".__bbAnnOutline{position:fixed;z-index:2147483643;pointer-events:none;border:2px solid #3b82f6;background:rgba(59,130,246,.08);border-radius:4px}" +
     ".__bbAnnPin{position:fixed;z-index:2147483645;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;" +
     "background:#3b82f6;color:#fff;font:700 12px/22px -apple-system,Segoe UI,Roboto,sans-serif;text-align:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4)}" +
-    "#__bbAnnForm{position:fixed;z-index:2147483647;width:336px;max-width:calc(100vw - 20px);max-height:min(420px,calc(100vh - 20px));overflow:hidden;background:#25262b;border:1px solid rgba(255,255,255,.1);" +
+    "#__bbAnnForm{position:fixed;z-index:2147483647;pointer-events:auto;width:336px;max-width:calc(100vw - 20px);max-height:min(420px,calc(100vh - 20px));overflow:hidden;background:#25262b;border:1px solid rgba(255,255,255,.1);" +
     "border-radius:13px;box-shadow:0 10px 30px rgba(0,0,0,.5);font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;color:#e8eaf0}" +
     "#__bbAnnForm [hidden]{display:none!important}" +
     "#__bbAnnForm .note{display:flex;align-items:center;gap:6px;min-height:46px;padding:5px 6px}" +
@@ -90,7 +99,7 @@ const PAGE_SCRIPT = `
   const style = document.createElement("style");
   style.id = "__bbAnnStyle";
   style.textContent = css;
-  document.documentElement.appendChild(style);
+  uiRoot.appendChild(style);
   const designStyle = document.createElement("style");
   designStyle.id = "__bbAnnDesignStyle";
   document.documentElement.appendChild(designStyle);
@@ -98,7 +107,7 @@ const PAGE_SCRIPT = `
   const el = (id, tag, parent) => {
     const node = document.createElement(tag || "div");
     node.id = id;
-    (parent || document.documentElement).appendChild(node);
+    (parent || uiRoot).appendChild(node);
     return node;
   };
 
@@ -179,7 +188,7 @@ const PAGE_SCRIPT = `
     return null;
   };
 
-  const ownNode = (node) => node instanceof Element && node.closest("#__bbAnnBar, #__bbAnnForm, #__bbAnnTip, #__bbAnnBox, .__bbAnnPin") !== null;
+  const ownNode = (node) => node === rootHost || (node instanceof Element && node.closest("#__bbAnnRoot") !== null);
   const isRoot = (node) => node === document.documentElement || node === document.body;
 
   const BASE_STYLE_PROPERTIES = [
@@ -510,7 +519,7 @@ const PAGE_SCRIPT = `
         const annotation = state.items.find((candidate) => candidate.id === pin.dataset.annotationId);
         if (annotation) openForm(annotation.element, annotation);
       });
-      document.documentElement.appendChild(pin);
+      uiRoot.appendChild(pin);
       pins.set(item.id, pin);
     }
     pin.textContent = String(item.seq);
@@ -546,7 +555,7 @@ const PAGE_SCRIPT = `
     if (!outline) {
       outline = document.createElement("div");
       outline.className = "__bbAnnOutline";
-      document.documentElement.appendChild(outline);
+      uiRoot.appendChild(outline);
       outlines.set(item.id, outline);
     }
     const rect = item.element && item.element.isConnected
@@ -573,8 +582,31 @@ const PAGE_SCRIPT = `
 
   const queueCapture = (item) => {
     state.captureQueue = state.captureQueue.filter((capture) => capture.id !== item.id);
+    item.version = (item.version || 0) + 1;
     item.capturePending = true;
-    state.captureQueue.push({ id: item.id });
+    state.captureQueue.push({ id: item.id, version: item.version });
+  };
+
+  const removeItem = (item) => {
+    restoreDesignText(item);
+    state.items = state.items.filter((candidate) => candidate.id !== item.id);
+    dropPin(item.id);
+    dropOutline(item.id);
+    state.captureQueue = [];
+    state.items.forEach((candidate, index) => {
+      candidate.seq = index + 1;
+      if (candidate.element && candidate.element.isConnected) {
+        const rect = candidate.element.getBoundingClientRect();
+        candidate.snapshotRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        candidate.nodePosition = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      }
+      queueCapture(candidate);
+      paintPin(candidate);
+      paintOutline(candidate);
+    });
+    renderDesignPreview();
+    bumpRevision();
+    syncBar();
   };
 
   const hideForm = () => {
@@ -724,6 +756,7 @@ const PAGE_SCRIPT = `
         }
         const item = {
           id: "ann_" + Date.now().toString(36) + "_" + (++state.seq),
+          version: 0,
           seq: state.items.length + 1,
           kind: "element",
           comment,
@@ -768,26 +801,7 @@ const PAGE_SCRIPT = `
       syncFormValidity();
     } else if (act === "drop") {
       if (formAnnotation) {
-        restoreDesignText(formAnnotation);
-        state.items = state.items.filter((i) => i.id !== formAnnotation.id);
-        dropPin(formAnnotation.id);
-        dropOutline(formAnnotation.id);
-        // renumber
-        state.captureQueue = [];
-        state.items.forEach((i, idx) => {
-          i.seq = idx + 1;
-          if (i.element && i.element.isConnected) {
-            const rect = i.element.getBoundingClientRect();
-            i.snapshotRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-            i.nodePosition = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-          }
-          i.capturePending = true;
-          state.captureQueue.push({ id: i.id });
-          paintPin(i);
-          paintOutline(i);
-        });
-        bumpRevision();
-        syncBar();
+        removeItem(formAnnotation);
       }
       hideForm();
     }
@@ -845,6 +859,7 @@ const PAGE_SCRIPT = `
     paintPin(item);
     return {
       id: item.id,
+      version: item.version,
       kind: item.kind,
       comment: item.comment,
       designChange: item.designChange,
@@ -885,16 +900,8 @@ const PAGE_SCRIPT = `
       openForm(element, item);
       return true;
     } else if (action === "delete") {
-      restoreDesignText(item);
-      state.items = state.items.filter((candidate) => candidate.id !== annotationId);
-      dropPin(annotationId);
-      dropOutline(annotationId);
-      state.captureQueue = state.captureQueue.filter((capture) => capture.id !== annotationId);
-      state.items.forEach((candidate, index) => {
-        candidate.seq = index + 1;
-        paintPin(candidate);
-      });
-      renderDesignPreview();
+      removeItem(item);
+      return true;
     } else {
       return false;
     }
@@ -922,7 +929,11 @@ const PAGE_SCRIPT = `
   bar.addEventListener("click", (event) => {
     const act = event.target && event.target.dataset ? event.target.dataset.act : null;
     if (act === "cancel") finish("cancel");
-    else if (act === "send" && state.items.length > 0) finish("send");
+    else if (
+      act === "send" &&
+      state.items.length > 0 &&
+      !state.items.some((item) => item.capturePending)
+    ) finish("send");
   });
 
   const cleanup = () => {
@@ -940,7 +951,8 @@ const PAGE_SCRIPT = `
     for (const item of state.items) restoreDesignText(item);
     for (const element of taggedElements) element.removeAttribute("data-bb-annotation-design");
     taggedElements.clear();
-    for (const node of [bar, tip, box, form, style, designStyle]) node.remove();
+    designStyle.remove();
+    rootHost.remove();
     document.documentElement.style.cursor = previousCursor;
     window.__bbAnnotateCleanup = null;
     window.__bbAnnotateRead = null;
@@ -958,7 +970,7 @@ const PAGE_SCRIPT = `
   if (document.body) {
     mutationObserver.observe(document.body, { childList: true, characterData: true, subtree: true });
   }
-  if (restoreBatch && restoreBatch.url === location.href && Array.isArray(restoreBatch.annotations)) {
+  if (shouldRestore) {
     state.items = restoreBatch.annotations.map((annotation, index) => {
       let element = null;
       try { element = annotation.selector ? document.querySelector(annotation.selector) : null; } catch {}
@@ -985,13 +997,13 @@ const PAGE_SCRIPT = `
   syncBar();
   window.__bbAnnotateCleanup = cleanup;
   window.__bbAnnotateTakeCapture = () => state.captureQueue.shift() || null;
-  window.__bbAnnotateFinishCapture = (id) => {
+  window.__bbAnnotateFinishCapture = (id, version) => {
     const item = state.items.find((candidate) => candidate.id === id);
-    if (item) item.capturePending = false;
+    if (item && item.version === version) item.capturePending = false;
     syncBar();
     return true;
   };
-  return true;
+  return { currentUrl: location.href, restored: shouldRestore };
 })()`;
 
 type Connection = ReturnType<typeof connect>;
@@ -1072,7 +1084,7 @@ function connect(wsEndpoint: string) {
 async function withPage<T>(
   wsEndpoint: string,
   signal: AbortSignal,
-  run: (connection: Connection, sessionId: string) => Promise<T>,
+  run: (connection: Connection, sessionId: string, contextId: number) => Promise<T>,
 ): Promise<T> {
   signal.throwIfAborted();
   const connection = connect(wsEndpoint);
@@ -1102,7 +1114,23 @@ async function withPage<T>(
         flatten: true,
       }),
     ).sessionId;
-    return await run(connection, sessionId);
+    const frameId = z
+      .object({ frameTree: z.object({ frame: z.object({ id: z.string() }) }) })
+      .parse(await connection.request("Page.getFrameTree", {}, sessionId)).frameTree.frame.id;
+    const contextId = z
+      .object({ executionContextId: z.number().int().positive() })
+      .parse(
+        await connection.request(
+          "Page.createIsolatedWorld",
+          {
+            frameId,
+            worldName: "bb-browser-annotate",
+            grantUniveralAccess: false,
+          },
+          sessionId,
+        ),
+      ).executionContextId;
+    return await run(connection, sessionId, contextId);
   } finally {
     if (sessionId !== null) {
       await connection.request("Target.detachFromTarget", { sessionId }).catch(() => undefined);
@@ -1114,11 +1142,12 @@ async function withPage<T>(
 async function evaluate(
   connection: Connection,
   sessionId: string,
+  contextId: number,
   expression: string,
 ): Promise<unknown> {
   const response = (await connection.request(
     "Runtime.evaluate",
-    { expression, returnByValue: true, awaitPromise: true },
+    { expression, contextId, returnByValue: true, awaitPromise: true },
     sessionId,
   )) as {
     result?: { value?: unknown };
@@ -1134,16 +1163,23 @@ async function evaluate(
 async function screenshot(
   connection: Connection,
   sessionId: string,
+  contextId: number,
 ): Promise<{
   base64: string;
   width: number;
   height: number;
   mimeType: "image/jpeg";
 }> {
-  const dpr = (await evaluate(connection, sessionId, "window.devicePixelRatio || 1")) as number;
+  const dpr = (await evaluate(
+    connection,
+    sessionId,
+    contextId,
+    "window.devicePixelRatio || 1",
+  )) as number;
   const viewport = (await evaluate(
     connection,
     sessionId,
+    contextId,
     "(visualViewport ? { width: visualViewport.width, height: visualViewport.height } : { width: innerWidth, height: innerHeight })",
   )) as { width: number; height: number };
   const data = z
@@ -1163,23 +1199,66 @@ async function screenshot(
   };
 }
 
+async function drainCaptures(
+  connection: Connection,
+  sessionId: string,
+  contextId: number,
+): Promise<Array<{ annotationId: string; version: number; image: Awaited<ReturnType<typeof screenshot>> }>> {
+  const captures: Array<{
+    annotationId: string;
+    version: number;
+    image: Awaited<ReturnType<typeof screenshot>>;
+  }> = [];
+  for (let index = 0; index < 50; index += 1) {
+    const raw = await evaluate(
+      connection,
+      sessionId,
+      contextId,
+      "window.__bbAnnotateTakeCapture ? window.__bbAnnotateTakeCapture() : null",
+    );
+    const capture = z
+      .object({ id: z.string().min(1), version: z.number().int().positive() })
+      .nullable()
+      .parse(raw);
+    if (!capture) break;
+    await connection.request("Page.enable", {}, sessionId).catch(() => undefined);
+    const image = await screenshot(connection, sessionId, contextId);
+    await evaluate(
+      connection,
+      sessionId,
+      contextId,
+      `window.__bbAnnotateFinishCapture && window.__bbAnnotateFinishCapture(${JSON.stringify(capture.id)}, ${capture.version})`,
+    );
+    captures.push({ annotationId: capture.id, version: capture.version, image });
+  }
+  return captures;
+}
+
 export default experimental_defineHostEntry({
   contract: hostContract,
   handlers: {
     startSession: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId) => {
+      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => {
         await evaluate(
           connection,
           sessionId,
+          contextId,
           `window.__bbAnnotateDone = null; window.__bbAnnotateCount = 0; window.__bbAnnotateRestoreBatch = ${JSON.stringify(input.batch)}; true`,
         );
-        await evaluate(connection, sessionId, PAGE_SCRIPT);
-        return { started: true as const };
+        const result = z
+          .object({ currentUrl: z.string(), restored: z.boolean() })
+          .parse(await evaluate(connection, sessionId, contextId, PAGE_SCRIPT));
+        return { started: true as const, ...result };
       });
     },
     readSession: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId) => {
-        const doneRaw = await evaluate(connection, sessionId, "window.__bbAnnotateDone || null");
+      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => {
+        const doneRaw = await evaluate(
+          connection,
+          sessionId,
+          contextId,
+          "window.__bbAnnotateDone || null",
+        );
         if (doneRaw !== null && typeof doneRaw === "object") {
           const done = doneRaw as { kind?: unknown; batch?: unknown };
           if (done.kind === "cancel") {
@@ -1187,8 +1266,7 @@ export default experimental_defineHostEntry({
               status: "cancelled" as const,
               revision: Math.max(0, input.afterRevision),
               batch: null,
-              preview: null,
-              capture: null,
+              captures: [],
             };
           }
           if (done.kind === "send") {
@@ -1197,92 +1275,53 @@ export default experimental_defineHostEntry({
               status: "sent" as const,
               revision: Math.max(input.afterRevision + 1, 0),
               batch,
-              preview: batch.annotations.length > 0
-                ? await screenshot(connection, sessionId)
-                : null,
-              capture: null,
+              captures: await drainCaptures(connection, sessionId, contextId),
             };
           }
         }
         const raw = await evaluate(
           connection,
           sessionId,
+          contextId,
           "window.__bbAnnotateRead ? window.__bbAnnotateRead() : null",
         );
         if (raw === null || typeof raw !== "object") {
           return {
-            status: "cancelled" as const,
+            status: "missing" as const,
             revision: Math.max(0, input.afterRevision),
             batch: null,
-            preview: null,
-            capture: null,
+            captures: [],
           };
         }
         const value = z
           .object({ revision: z.number().int().min(0), batch: batchSchema })
           .parse(raw);
-        if (value.revision > input.afterRevision) {
-          return {
-            status: "active" as const,
-            revision: value.revision,
-            batch: value.batch,
-            preview: null,
-            capture: null,
-          };
-        }
-
-        const captureRaw = await evaluate(
-          connection,
-          sessionId,
-          "window.__bbAnnotateTakeCapture ? window.__bbAnnotateTakeCapture() : null",
-        );
-        if (
-          typeof captureRaw === "object" &&
-          captureRaw !== null &&
-          typeof (captureRaw as { id?: unknown }).id === "string"
-        ) {
-          const annotationId = (captureRaw as { id: string }).id;
-          await connection.request("Page.enable", {}, sessionId).catch(() => undefined);
-          const image = await screenshot(connection, sessionId);
-          await evaluate(
-            connection,
-            sessionId,
-            `window.__bbAnnotateFinishCapture(${JSON.stringify(annotationId)})`,
-          );
-          return {
-            status: "active" as const,
-            revision: value.revision,
-            batch: value.batch,
-            preview: image,
-            capture: { annotationId, image },
-          };
-        }
-
         return {
           status: "active" as const,
           revision: value.revision,
-          batch: null,
-          preview: null,
-          capture: null,
+          batch: value.batch,
+          captures: await drainCaptures(connection, sessionId, contextId),
         };
       });
     },
     mutateSession: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId) => ({
+      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => ({
         changed: Boolean(
           await evaluate(
             connection,
             sessionId,
+            contextId,
             `window.__bbAnnotateMutate ? window.__bbAnnotateMutate(${JSON.stringify(input.annotationId)}, ${JSON.stringify(input.action)}) : false`,
           ),
         ),
       }));
     },
     cleanupSession: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId) => {
+      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => {
         await evaluate(
           connection,
           sessionId,
+          contextId,
           "window.__bbAnnotateCleanup && window.__bbAnnotateCleanup(); true",
         ).catch(() => undefined);
         return { cleaned: true as const };

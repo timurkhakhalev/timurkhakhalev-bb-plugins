@@ -6,10 +6,13 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
+  type ComposerStructuredDraft,
+  type ComposerView,
   type ExperimentalPluginBrowserToolbarActionProps,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { DesignChange, rpcContract } from "./contracts.js";
+import { removeStructuredMentionText } from "./composer.js";
 
 type SessionEvent = {
   threadId?: string;
@@ -29,7 +32,7 @@ type LiveAnnotation = {
   previewDataUrl: string | null;
 };
 
-const attachedMentions = new Map<string, { batchId: string; label: string }>();
+const composerDrafts = new Map<string, ComposerStructuredDraft>();
 
 const annotateIcon = (
   <svg
@@ -119,14 +122,10 @@ function pluralizeAnnotations(count: number) {
   return `${count} annotation${count === 1 ? "" : "s"}`;
 }
 
-function removeMentionLabel(text: string, label: string) {
-  const index = text.lastIndexOf(label);
-  if (index === -1) return text;
-  let start = index;
-  let end = index + label.length;
-  if (text[end] === " ") end += 1;
-  else if (start > 0 && text[start - 1] === " ") start -= 1;
-  return `${text.slice(0, start)}${text.slice(end)}`;
+function browserMentions(threadId: string) {
+  return (composerDrafts.get(threadId)?.mentions ?? []).filter(
+    (mention) => mention.provider === "browser-comments",
+  );
 }
 
 function useBrowserAnnotationsComposerSync() {
@@ -136,20 +135,28 @@ function useBrowserAnnotationsComposerSync() {
   const composerRef = useRef(composer);
   const revisionRef = useRef(-1);
   const liveBatchRef = useRef<string | null>(null);
+  const requestedMentionRef = useRef<string | null>(null);
+  const observedMentionRef = useRef<string | null>(null);
+  const pollErrorRef = useRef(false);
   const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
   composerRef.current = composer;
 
   const detach = useCallback(() => {
     if (!threadId) return;
-    const attached = attachedMentions.get(threadId);
-    if (!attached) return;
-    composerRef.current.updateText((text) => removeMentionLabel(text, attached.label));
-    attachedMentions.delete(threadId);
+    const mentions = browserMentions(threadId);
+    for (const mention of [...mentions].sort((left, right) => right.from - left.from)) {
+      composerRef.current.updateText((text) => removeStructuredMentionText(text, mention));
+    }
+    requestedMentionRef.current = null;
+    observedMentionRef.current = null;
   }, [threadId]);
 
   useEffect(() => {
     revisionRef.current = -1;
     liveBatchRef.current = null;
+    requestedMentionRef.current = null;
+    observedMentionRef.current = null;
+    pollErrorRef.current = false;
   }, [threadId]);
 
   useEffect(() => {
@@ -175,30 +182,47 @@ function useBrowserAnnotationsComposerSync() {
 
         if (live.batchId && live.annotations.length > 0) {
           const label = pluralizeAnnotations(live.annotations.length);
-          const attached = attachedMentions.get(threadId);
-          if (!attached) {
-            if (!composerRef.current.text.includes(label)) {
-              composerRef.current.insertMention({
-                provider: "browser-comments",
-                id: live.batchId,
-                label,
-              });
-            }
-            attachedMentions.set(threadId, { batchId: live.batchId, label });
-          } else if (attached.label !== label) {
-            composerRef.current.updateText((text) => removeMentionLabel(text, attached.label));
+          const mentions = browserMentions(threadId);
+          const attached = mentions.find((mention) => mention.id === live.batchId);
+          if (attached) {
+            observedMentionRef.current = live.batchId;
+            requestedMentionRef.current = null;
+          }
+          if (attached && attached.label !== label) {
+            composerRef.current.updateText((text) =>
+              removeStructuredMentionText(text, attached),
+            );
             composerRef.current.insertMention({
               provider: "browser-comments",
               id: live.batchId,
               label,
             });
-            attachedMentions.set(threadId, { batchId: live.batchId, label });
+            requestedMentionRef.current = `${live.batchId}:${label}`;
+          } else if (
+            !attached &&
+            observedMentionRef.current === live.batchId &&
+            requestedMentionRef.current === null
+          ) {
+            observedMentionRef.current = null;
+            requestedMentionRef.current = null;
+            await rpc.call("discard", { threadId, batchId: live.batchId });
+          } else if (!attached && requestedMentionRef.current !== `${live.batchId}:${label}`) {
+            composerRef.current.insertMention({
+              provider: "browser-comments",
+              id: live.batchId,
+              label,
+            });
+            requestedMentionRef.current = `${live.batchId}:${label}`;
           }
         } else if (!live.active || revisionChanged) {
           detach();
         }
-      } catch {
-        // A short gap is normal while the Browser lease is being established.
+        pollErrorRef.current = false;
+      } catch (error) {
+        if (!pollErrorRef.current) {
+          pollErrorRef.current = true;
+          toast.error(error instanceof Error ? error.message : "Could not sync browser annotations");
+        }
       } finally {
         running = false;
       }
@@ -217,7 +241,7 @@ function useBrowserAnnotationsComposerSync() {
       (rawPayload) => {
         const payload = rawPayload as SessionEvent;
         if (!threadId || payload.threadId !== threadId) return;
-        if (payload.status === "sent" || payload.status === "cancelled") detach();
+        if (payload.status === "sent") detach();
       },
       [detach, threadId],
     ),
@@ -322,6 +346,10 @@ function SentAnnotationsHover() {
           setEditable(result.editable);
           setAnnotations(result.annotations);
         }
+      }).catch((error) => {
+        if (request === requestRef.current) {
+          toast.error(error instanceof Error ? error.message : "Could not load annotations");
+        }
       });
     };
     const leave = (event: MouseEvent) => {
@@ -342,12 +370,16 @@ function SentAnnotationsHover() {
   const editAnnotation = useCallback(
     async (annotationId: string) => {
       if (!threadId || !editable) return;
-      const result = await rpc.call("mutate", { threadId, annotationId, action: "open" });
-      if (!result.changed) return;
-      setAnchor(null);
-      setBatchId(null);
-      setEditable(false);
-      setAnnotations([]);
+      try {
+        const result = await rpc.call("mutate", { threadId, annotationId, action: "open" });
+        if (!result.changed) return;
+        setAnchor(null);
+        setBatchId(null);
+        setEditable(false);
+        setAnnotations([]);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not open annotation");
+      }
     },
     [editable, rpc, threadId],
   );
@@ -355,14 +387,18 @@ function SentAnnotationsHover() {
   const deleteAnnotation = useCallback(
     async (annotationId: string) => {
       if (!threadId || !batchId || !editable) return;
-      const result = await rpc.call("mutate", { threadId, annotationId, action: "delete" });
-      if (!result.changed) return;
-      const next = annotations.filter((annotation) => annotation.id !== annotationId);
-      setAnnotations(next);
-      if (next.length === 0) {
-        setAnchor(null);
-        setBatchId(null);
-        setEditable(false);
+      try {
+        const result = await rpc.call("mutate", { threadId, annotationId, action: "delete" });
+        if (!result.changed) return;
+        const next = annotations.filter((annotation) => annotation.id !== annotationId);
+        setAnnotations(next);
+        if (next.length === 0) {
+          setAnchor(null);
+          setBatchId(null);
+          setEditable(false);
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not delete annotation");
       }
     },
     [annotations, batchId, editable, rpc, threadId],
@@ -434,6 +470,15 @@ function SentAnnotationsHover() {
 }
 
 export default definePluginApp((app) => {
+  app.composer.customize({
+    id: "browser-annotations-draft",
+    scopes: ["thread"],
+    richText: {
+      onDraftChange(draft: ComposerStructuredDraft, view: ComposerView) {
+        if (view.scope.kind === "thread") composerDrafts.set(view.scope.threadId, draft);
+      },
+    },
+  });
   app.slots.experimental_browserToolbarAction({
     id: "browser-annotate",
     title: "Browser Annotate",

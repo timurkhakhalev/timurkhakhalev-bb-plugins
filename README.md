@@ -12,7 +12,7 @@
 6. Нажмите **Send** в компактной панели **Annotate Page**.
 7. Плагин сразу отправляет в текущий чат одно сообщение `N annotations` с полным контекстом и снимками. Live-плашка исчезает, а список отправленных аннотаций доступен по наведению на mention в истории.
 
-`Escape`, крестик на composer-плашке или повторное нажатие **Annotate** завершают сессию без добавления комментариев в итоговый запрос.
+`Escape` и повторное нажатие **Annotate** выключают picker, но сохраняют уже добавленные annotations в composer. Удаление mention из composer удаляет весь несохранённый batch.
 
 ## Что получает агент
 
@@ -27,18 +27,21 @@
 - тема интерфейса в момент сохранения;
 - отдельный JPEG для каждого комментария, снятый сразу после сохранения выделения.
 
-Текст и изображения страницы явно помечены как недоверенные page evidence. Только поле `Comment` считается пользовательской инструкцией.
+Текст и изображения страницы явно помечены как недоверенные page evidence. Editor исполняется в отдельном CDP isolated world и закрытом Shadow DOM, поэтому страница не может прочитать или подменить пользовательский комментарий и Send intent. Только поле `Comment` считается пользовательской инструкцией.
 
 ## Поток данных
 
 ```text
 Browser toolbar action
   -> server resolves the active thread/tab to a desktop Browser instance
-  -> host acquires the tab and injects the element picker
-  -> every saved comment queues an immediate CDP screenshot
+  -> host acquires the tab and injects the picker into an isolated world
+  -> trusted editor lives in a closed Shadow DOM; the page supplies only untrusted element evidence
+  -> server persists every saved revision as the authoritative draft
+  -> every saved or edited comment queues a versioned CDP screenshot
   -> composer polls the live revision and renders the current annotation list
   -> edit/delete actions update the same page overlay
-  -> Send stores the screenshots in thread storage
+  -> reload reinjects the picker from the persisted draft; navigation pauses the previous page batch
+  -> Send drains the capture queue and stores current-version screenshots in thread storage
   -> batch metadata is persisted beside the screenshots for message hover details
   -> server sends one Browser comments mention to the current thread
   -> send resolves the mention
@@ -61,8 +64,8 @@ Browser toolbar action
 - Поддерживается desktop BB с нативным Browser.
 - Выбираются DOM-элементы верхнего документа; cross-origin iframe, произвольные области и virtual targets пока не поддержаны.
 - До 50 комментариев за batch.
-- Сессия ограничена 25 минутами, lease — 30 минутами.
-- Pending batches живут в памяти server-процесса до 24 часов; перезапуск плагина их очищает.
+- Browser lease ограничен 30 минутами.
+- Pending batches сохраняются в thread storage и индексируются в plugin KV. Они восстанавливаются после reload страницы и перезапуска плагина и истекают через 24 часа.
 
 ## Проверка
 

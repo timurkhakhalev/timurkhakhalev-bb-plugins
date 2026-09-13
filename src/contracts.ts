@@ -60,6 +60,7 @@ export type DesignChange = z.infer<typeof designChangeSchema>;
 export const annotationSchema = z
   .object({
     id: idSchema,
+    version: z.number().int().positive(),
     kind: z.literal("element"),
     comment: z.string().trim().max(4000),
     designChange: designChangeSchema.nullable(),
@@ -137,7 +138,13 @@ export const hostContract = {
         batch: batchSchema.nullable(),
       })
       .strict(),
-    output: z.object({ started: z.literal(true) }).strict(),
+    output: z
+      .object({
+        started: z.literal(true),
+        currentUrl: z.string().max(8192),
+        restored: z.boolean(),
+      })
+      .strict(),
   },
   readSession: {
     input: z
@@ -148,14 +155,18 @@ export const hostContract = {
       .strict(),
     output: z
       .object({
-        status: z.enum(["active", "sent", "cancelled"]),
+        status: z.enum(["active", "sent", "cancelled", "missing"]),
         revision: z.number().int().min(0),
         batch: batchSchema.nullable(),
-        preview: screenshotSchema.nullable(),
-        capture: z
-          .object({ annotationId: idSchema, image: screenshotSchema })
-          .strict()
-          .nullable(),
+        captures: z.array(
+          z
+            .object({
+              annotationId: idSchema,
+              version: z.number().int().positive(),
+              image: screenshotSchema,
+            })
+            .strict(),
+        ),
       })
       .strict(),
   },
@@ -257,7 +268,7 @@ export const rpcContract = {
       .strict(),
   },
   discard: {
-    input: z.object({ threadId: idSchema }).strict(),
+    input: z.object({ threadId: idSchema, batchId: idSchema }).strict(),
     output: z.object({ discarded: z.boolean() }).strict(),
   },
 } satisfies PluginRpcContract;

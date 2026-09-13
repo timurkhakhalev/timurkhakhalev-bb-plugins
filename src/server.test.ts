@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { batchSchema, screenshotSchema } from "./contracts.js";
-import { buildBatchMentionInput, renderBatch } from "./server.js";
+import { removeStructuredMentionText } from "./composer.js";
+import {
+  buildBatchMentionInput,
+  missingCaptureAnnotationIds,
+  renderBatch,
+  type PendingBatch,
+} from "./server.js";
 
 const batch = batchSchema.parse({
   url: "https://example.com/products",
@@ -10,6 +16,7 @@ const batch = batchSchema.parse({
   annotations: [
     {
       id: "ann_1",
+      version: 1,
       kind: "element",
       comment: "Make this CTA less prominent.",
       designChange: null,
@@ -95,7 +102,7 @@ describe("browser annotation payload", () => {
         sent: false,
         batch,
         images: [],
-        previewDataUrl: null,
+        previewDataUrls: new Map(),
       }),
     ).toEqual({
       type: "text",
@@ -113,5 +120,34 @@ describe("browser annotation payload", () => {
         },
       ],
     });
+  });
+
+  it("requires the screenshot version to match the current annotation", () => {
+    const item: PendingBatch = {
+      id: "batch_1",
+      threadId: "thread_1",
+      createdAt: 1,
+      sent: false,
+      batch,
+      images: [{ annotationId: "ann_1", version: 0, path: "/tmp/stale.jpg" }],
+      previewDataUrls: new Map(),
+    };
+
+    expect(missingCaptureAnnotationIds(item)).toEqual(["ann_1"]);
+    item.images[0].version = 1;
+    expect(missingCaptureAnnotationIds(item)).toEqual([]);
+  });
+
+  it("removes only the structured mention range, not matching user text", () => {
+    expect(
+      removeStructuredMentionText("1 annotation keep 1 annotation", { from: 0, to: 12 }),
+    ).toBe("keep 1 annotation");
+  });
+
+  it("keeps the trusted editor in an isolated world and closed shadow root", async () => {
+    const hostSource = await Bun.file(new URL("./host.ts", import.meta.url)).text();
+    expect(hostSource).toContain('worldName: "bb-browser-annotate"');
+    expect(hostSource).toContain('attachShadow({ mode: "closed" })');
+    expect(hostSource).toContain('status: "missing" as const');
   });
 });
