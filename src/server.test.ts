@@ -66,6 +66,7 @@ describe("browser annotation payload", () => {
         id: "batch_1",
         threadId: "thread_1",
         createdAt: 1,
+        sent: false,
         batch,
         images: [],
         previewDataUrl: null,

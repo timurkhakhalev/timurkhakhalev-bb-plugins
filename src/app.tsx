@@ -116,6 +116,116 @@ function pluralizeAnnotations(count: number) {
   return `${count} annotation${count === 1 ? "" : "s"}`;
 }
 
+function SentAnnotationsHover() {
+  const rpc = useRpc<typeof rpcContract>();
+  const composer = useComposer();
+  const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
+  const closeTimerRef = useRef<number | null>(null);
+  const requestRef = useRef(0);
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const [annotations, setAnnotations] = useState<LiveAnnotation[]>([]);
+  const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({});
+
+  const cancelClose = useCallback(() => {
+    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
+  }, []);
+
+  const closeSoon = useCallback(() => {
+    cancelClose();
+    closeTimerRef.current = window.setTimeout(() => {
+      setAnchor(null);
+      setAnnotations([]);
+    }, 140);
+  }, [cancelClose]);
+
+  useEffect(() => {
+    const batchIdFor = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return null;
+      const pill = target.closest<HTMLElement>('[data-prompt-mention="true"]');
+      if (!pill) return null;
+      try {
+        const resource = JSON.parse(
+          pill.getAttribute("data-prompt-mention-resource") ?? "null",
+        ) as { kind?: string; itemId?: string } | null;
+        const prefix = "browser-comments:";
+        if (resource?.kind !== "plugin" || !resource.itemId?.startsWith(prefix)) return null;
+        return { pill, batchId: resource.itemId.slice(prefix.length) };
+      } catch {
+        return null;
+      }
+    };
+
+    const enter = (event: MouseEvent) => {
+      const match = batchIdFor(event.target);
+      if (!match) return;
+      cancelClose();
+      const rect = match.pill.getBoundingClientRect();
+      setAnchor(match.pill);
+      setPopupStyle({
+        left: Math.max(12, Math.min(rect.left, window.innerWidth - 396)),
+        ...(rect.top > 360
+          ? { bottom: window.innerHeight - rect.top + 8 }
+          : { top: rect.bottom + 8 }),
+      });
+      const request = ++requestRef.current;
+      if (!threadId) return;
+      void rpc.call("batch", { threadId, batchId: match.batchId }).then((result) => {
+        if (request === requestRef.current) setAnnotations(result.annotations);
+      });
+    };
+    const leave = (event: MouseEvent) => {
+      const match = batchIdFor(event.target);
+      if (!match) return;
+      if (event.relatedTarget instanceof Node && match.pill.contains(event.relatedTarget)) return;
+      closeSoon();
+    };
+    document.addEventListener("mouseover", enter);
+    document.addEventListener("mouseout", leave);
+    return () => {
+      document.removeEventListener("mouseover", enter);
+      document.removeEventListener("mouseout", leave);
+      cancelClose();
+    };
+  }, [cancelClose, closeSoon, rpc, threadId]);
+
+  if (!anchor || annotations.length === 0) return null;
+  return createPortal(
+    <div
+      data-browser-annotations-popover=""
+      className="fixed z-[1100] max-h-[min(28rem,70vh)] w-96 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-2xl"
+      style={popupStyle}
+      onMouseEnter={cancelClose}
+      onMouseLeave={closeSoon}
+    >
+      {annotations.map((annotation, index) => (
+        <div key={annotation.id} className="border-b border-border p-2 last:border-b-0">
+          <div className="flex items-start gap-2">
+            {annotation.previewDataUrl ? (
+              <img
+                src={annotation.previewDataUrl}
+                alt=""
+                className="mt-0.5 size-10 rounded-md border border-border object-cover"
+              />
+            ) : (
+              <div className="mt-0.5 flex size-10 items-center justify-center rounded-md border border-border bg-muted text-xs text-muted-foreground">
+                {index + 1}
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="rounded-md bg-muted px-1.5 py-0.5">{annotation.tag}</span>
+                <span className="truncate">{annotation.target}</span>
+              </div>
+              <p className="mt-2 whitespace-pre-wrap text-sm">{annotation.comment}</p>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
 function BrowserCommentsComposer() {
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
@@ -271,8 +381,8 @@ function BrowserCommentsComposer() {
   if (count === 0) return null;
 
   return (
-    <>
-      <div className="flex h-8 items-center rounded-lg border border-border bg-card text-sm text-foreground shadow-sm">
+    <div className="flex justify-start px-1 py-1">
+      <div className="flex h-8 w-fit items-center rounded-lg border border-border bg-card text-sm text-foreground shadow-sm">
         <button
           ref={triggerRef}
           type="button"
@@ -376,7 +486,7 @@ function BrowserCommentsComposer() {
             document.body,
           )
         : null}
-    </>
+    </div>
   );
 }
 
@@ -389,6 +499,10 @@ export default definePluginApp((app) => {
   app.composer.customize({
     id: "browser-comments",
     scopes: ["thread"],
-    actions: [{ id: "annotations", component: BrowserCommentsComposer }],
+    banners: [{ id: "annotations", chrome: "bare", component: BrowserCommentsComposer }],
+  });
+  app.slots.experimental_appOverlay({
+    id: "sent-annotation-hover",
+    component: SentAnnotationsHover,
   });
 });

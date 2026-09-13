@@ -7,10 +7,10 @@
 1. Откройте страницу во встроенном Browser.
 2. Нажмите **Annotate** прямо в панели Browser рядом с адресной строкой.
 3. Выберите DOM-элемент, напишите комментарий и сохраните его.
-4. После каждого сохранения плашка в composer сразу обновляет число и список аннотаций. Из неё можно изменить или удалить отдельный комментарий либо убрать весь batch.
+4. После каждого сохранения banner-плашка над полем composer сразу обновляет число и список аннотаций. Список раскрывается по наведению; из него можно изменить или удалить отдельный комментарий либо убрать весь batch.
 5. Повторите это для остальных элементов. Маркер на странице также можно открыть, чтобы изменить или удалить комментарий.
 6. Нажмите **Send** в компактной панели **Annotate Page**.
-7. Плагин сразу отправляет в текущий чат одно сообщение `N annotations` с полным контекстом и снимками. Live-плашка исчезает.
+7. Плагин сразу отправляет в текущий чат одно сообщение `N annotations` с полным контекстом и снимками. Live-плашка исчезает, а список отправленных аннотаций доступен по наведению на mention в истории.
 
 `Escape`, крестик на composer-плашке или повторное нажатие **Annotate** завершают сессию без добавления комментариев в итоговый запрос.
 
@@ -39,6 +39,7 @@ Browser toolbar action
   -> composer polls the live revision and renders the current annotation list
   -> edit/delete actions update the same page overlay
   -> Send stores the screenshots in thread storage
+  -> batch metadata is persisted beside the screenshots for message hover details
   -> server sends one Browser comments mention to the current thread
   -> send resolves the mention
   -> agent-only text + labeled localImage inputs are appended to that turn

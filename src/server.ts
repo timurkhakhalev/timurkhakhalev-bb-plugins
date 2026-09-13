@@ -1,5 +1,5 @@
 import { type BbPluginApi, type PluginRpcHandlers } from "@get-bb/plugin-sdk";
-import { hostContract, rpcContract } from "./contracts.js";
+import { batchSchema, hostContract, rpcContract } from "./contracts.js";
 import type { Batch, Screenshot } from "./contracts.js";
 
 type BrowserScope = {
@@ -13,6 +13,7 @@ type PendingBatch = {
   id: string;
   threadId: string;
   createdAt: number;
+  sent: boolean;
   batch: Batch;
   images: Array<{ annotationId: string; path: string }>;
   previewDataUrl: string | null;
@@ -182,6 +183,73 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     return path;
   }
 
+  async function persistBatch(item: PendingBatch): Promise<void> {
+    const location = await bb.sdk.threads.storageLocation({ threadId: item.threadId });
+    await bb.sdk.files.write({
+      hostId: location.hostId,
+      path: `${location.storageRootPath}/browser-comments/${item.id}.json`,
+      content: JSON.stringify({
+        id: item.id,
+        threadId: item.threadId,
+        createdAt: item.createdAt,
+        batch: item.batch,
+        images: item.images,
+      }),
+      contentEncoding: "utf8",
+      createParents: true,
+    });
+  }
+
+  async function loadBatch(threadId: string, batchId: string): Promise<PendingBatch | null> {
+    const cached = pending.get(batchId);
+    if (cached?.threadId === threadId) return cached;
+    try {
+      const location = await bb.sdk.threads.storageLocation({ threadId });
+      const stored = await bb.sdk.files.read({
+        hostId: location.hostId,
+        path: `${location.storageRootPath}/browser-comments/${batchId}.json`,
+      });
+      const raw = JSON.parse(stored.content) as Record<string, unknown>;
+      const batch = batchSchema.parse(raw.batch);
+      const images = Array.isArray(raw.images)
+        ? raw.images.flatMap((image) => {
+            if (
+              typeof image === "object" &&
+              image !== null &&
+              typeof (image as Record<string, unknown>).annotationId === "string" &&
+              typeof (image as Record<string, unknown>).path === "string"
+            ) {
+              return [image as { annotationId: string; path: string }];
+            }
+            return [];
+          })
+        : [];
+      let previewDataUrl: string | null = null;
+      if (images[0]) {
+        const preview = await bb.sdk.files.read({
+          hostId: location.hostId,
+          path: images[0].path,
+        });
+        if (preview.contentEncoding === "base64") {
+          previewDataUrl = `data:${preview.mimeType ?? "image/jpeg"};base64,${preview.content}`;
+        }
+      }
+      const item: PendingBatch = {
+        id: batchId,
+        threadId,
+        createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
+        sent: true,
+        batch,
+        images,
+        previewDataUrl,
+      };
+      pending.set(batchId, item);
+      return item;
+    } catch {
+      return null;
+    }
+  }
+
   bb.ui.registerMentionProvider({
     id: "browser-comments",
     label: "Browser comments",
@@ -189,7 +257,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       if (!context.threadId) return [];
       prunePending();
       return [...pending.values()]
-        .filter((item) => item.threadId === context.threadId)
+        .filter((item) => item.threadId === context.threadId && !item.sent)
         .map((item) => ({
           id: item.id,
           title: `${item.batch.annotations.length} browser comment${item.batch.annotations.length === 1 ? "" : "s"}`,
@@ -277,11 +345,17 @@ export default function browserAnnotate(bb: BbPluginApi): void {
             id,
             threadId,
             createdAt: Date.now(),
+            sent: false,
             batch: result.batch,
             images,
             previewDataUrl: result.screenshots[0]
               ? `data:${result.screenshots[0].image.mimeType};base64,${result.screenshots[0].image.base64}`
               : null,
+          });
+          await persistBatch(pending.get(id)!).catch((error) => {
+            bb.log.warn(
+              `Could not persist annotation details: ${error instanceof Error ? error.message : String(error)}`,
+            );
           });
           try {
             await bb.sdk.threads.send({
@@ -289,7 +363,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
               mode: "steer-if-active",
               input: [buildBatchMentionInput(bb.pluginId, pending.get(id)!)],
             });
-            pending.delete(id);
+            pending.get(id)!.sent = true;
             bb.realtime.publish("annotate-session", {
               threadId,
               tabId,
@@ -344,6 +418,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       return {
         batches: [...pending.values()]
           .filter((item) => item.threadId === threadId)
+          .filter((item) => !item.sent)
           .map((item) => ({
             id: item.id,
             threadId: item.threadId,
@@ -422,6 +497,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       }
       const item = [...pending.values()].find(
         (candidate) =>
+          !candidate.sent &&
           candidate.threadId === threadId &&
           candidate.batch.annotations.some((annotation) => annotation.id === annotationId),
       );
@@ -441,10 +517,25 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       return { changed: true };
     },
 
+    async batch({ threadId, batchId }) {
+      prunePending();
+      const item = await loadBatch(threadId, batchId);
+      if (!item) return { annotations: [] };
+      return {
+        annotations: item.batch.annotations.map((annotation) => ({
+          id: annotation.id,
+          tag: annotation.tag,
+          target: annotation.target,
+          comment: annotation.comment,
+          previewDataUrl: item.previewDataUrl,
+        })),
+      };
+    },
+
     async draft({ threadId }) {
       prunePending();
       const item = [...pending.values()]
-        .filter((candidate) => candidate.threadId === threadId)
+        .filter((candidate) => candidate.threadId === threadId && !candidate.sent)
         .sort((left, right) => right.createdAt - left.createdAt)[0];
       if (!item) return { batchId: null, annotations: [] };
       return {
@@ -464,7 +555,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       session?.controller.abort();
       let discarded = Boolean(session);
       for (const [id, item] of pending) {
-        if (item.threadId !== threadId) continue;
+        if (item.threadId !== threadId || item.sent) continue;
         pending.delete(id);
         discarded = true;
       }

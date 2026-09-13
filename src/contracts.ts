@@ -58,6 +58,16 @@ export const batchSchema = z
   .strict();
 export type Batch = z.infer<typeof batchSchema>;
 
+const liveAnnotationSchema = z
+  .object({
+    id: idSchema,
+    tag: z.string(),
+    target: z.string(),
+    comment: z.string(),
+    previewDataUrl: z.string().nullable(),
+  })
+  .strict();
+
 /** server ↔ host (CDP execution on the desktop machine) */
 export const hostContract = {
   annotateSession: {
@@ -157,17 +167,7 @@ export const rpcContract = {
         active: z.boolean(),
         revision: z.number().int().min(0),
         batchId: idSchema.nullable(),
-        annotations: z.array(
-          z
-            .object({
-              id: idSchema,
-              tag: z.string(),
-              target: z.string(),
-              comment: z.string(),
-              previewDataUrl: z.string().nullable(),
-            })
-            .strict(),
-        ),
+        annotations: z.array(liveAnnotationSchema),
       })
       .strict(),
   },
@@ -182,22 +182,16 @@ export const rpcContract = {
       .strict(),
     output: z.object({ changed: z.boolean() }).strict(),
   },
+  batch: {
+    input: z.object({ threadId: idSchema, batchId: idSchema }).strict(),
+    output: z.object({ annotations: z.array(liveAnnotationSchema) }).strict(),
+  },
   draft: {
     input: z.object({ threadId: idSchema }).strict(),
     output: z
       .object({
         batchId: idSchema.nullable(),
-        annotations: z.array(
-          z
-            .object({
-              id: idSchema,
-              tag: z.string(),
-              target: z.string(),
-              comment: z.string(),
-              previewDataUrl: z.string().nullable(),
-            })
-            .strict(),
-        ),
+        annotations: z.array(liveAnnotationSchema),
       })
       .strict(),
   },
