@@ -300,9 +300,16 @@ function SentAnnotationsHover() {
       if (!match) return;
       cancelClose();
       const rect = match.pill.getBoundingClientRect();
+      const viewportGutter = 12;
+      const popoverWidth = Math.min(
+        384,
+        window.innerWidth - viewportGutter * 2,
+        rect.right - viewportGutter,
+      );
       setAnchor(match.pill);
       setPopupStyle({
-        left: Math.max(12, Math.min(rect.left, window.innerWidth - 396)),
+        left: Math.max(viewportGutter, rect.right - popoverWidth),
+        width: popoverWidth,
         ...(rect.top > 360
           ? { bottom: window.innerHeight - rect.top + 8 }
           : { top: rect.bottom + 8 }),
@@ -365,7 +372,7 @@ function SentAnnotationsHover() {
   return createPortal(
     <div
       data-browser-annotations-popover=""
-      className="fixed z-[1100] max-h-[min(28rem,70vh)] w-96 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-2xl"
+      className="fixed z-[1100] max-h-[min(28rem,70vh)] max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-2xl"
       style={popupStyle}
       onMouseEnter={cancelClose}
       onMouseLeave={closeSoon}
