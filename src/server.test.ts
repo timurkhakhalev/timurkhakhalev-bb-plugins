@@ -12,6 +12,7 @@ const batch = batchSchema.parse({
       id: "ann_1",
       kind: "element",
       comment: "Make this CTA less prominent.",
+      designChange: null,
       selector: "main > a:nth-of-type(1)",
       tag: "a",
       classes: "button primary",
@@ -58,6 +59,31 @@ describe("browser annotation payload", () => {
         annotations: [{ ...batch.annotations[0], comment: "   " }],
       }),
     ).toThrow();
+  });
+
+  it("accepts a design-only annotation and renders exact before/after values", () => {
+    const designBatch = batchSchema.parse({
+      ...batch,
+      annotations: [
+        {
+          ...batch.annotations[0],
+          comment: "",
+          designChange: {
+            text: { previousValue: "Buy now", value: "View details" },
+            declarations: [
+              { property: "font-size", previousValue: "14px", value: "18px" },
+              { property: "color", previousValue: "rgb(0, 0, 0)", value: "#ffffff" },
+            ],
+          },
+        },
+      ],
+    });
+
+    const message = renderBatch(designBatch);
+    expect(message).toContain("Requested design changes:");
+    expect(message).toContain("text: Buy now -> View details");
+    expect(message).toContain("font-size: 14px -> 18px");
+    expect(message).toContain("color: rgb(0, 0, 0) -> #ffffff");
   });
 
   it("builds one resolvable mention for direct thread send", () => {

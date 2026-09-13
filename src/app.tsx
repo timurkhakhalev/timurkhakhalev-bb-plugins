@@ -9,7 +9,7 @@ import {
   type ExperimentalPluginBrowserToolbarActionProps,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import type { rpcContract } from "./contracts.js";
+import type { DesignChange, rpcContract } from "./contracts.js";
 
 type SessionEvent = {
   threadId?: string;
@@ -25,6 +25,7 @@ type LiveAnnotation = {
   tag: string;
   target: string;
   comment: string;
+  designChange: DesignChange | null;
   previewDataUrl: string | null;
 };
 
@@ -116,13 +117,149 @@ function pluralizeAnnotations(count: number) {
   return `${count} annotation${count === 1 ? "" : "s"}`;
 }
 
+function removeMentionLabel(text: string, label: string) {
+  const index = text.lastIndexOf(label);
+  if (index === -1) return text;
+  let start = index;
+  let end = index + label.length;
+  if (text[end] === " ") end += 1;
+  else if (start > 0 && text[start - 1] === " ") start -= 1;
+  return `${text.slice(0, start)}${text.slice(end)}`;
+}
+
+function useBrowserAnnotationsComposerSync() {
+  const rpc = useRpc<typeof rpcContract>();
+  const composer = useComposer();
+  const connectionState = useRealtimeConnectionState();
+  const composerRef = useRef(composer);
+  const revisionRef = useRef(-1);
+  const liveBatchRef = useRef<string | null>(null);
+  const attachedRef = useRef<{ batchId: string; label: string } | null>(null);
+  const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
+  composerRef.current = composer;
+
+  const detach = useCallback(() => {
+    const attached = attachedRef.current;
+    if (!attached) return;
+    composerRef.current.updateText((text) => removeMentionLabel(text, attached.label));
+    attachedRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    revisionRef.current = -1;
+    liveBatchRef.current = null;
+    attachedRef.current = null;
+  }, [threadId]);
+
+  useEffect(() => {
+    if (!threadId) return;
+    let disposed = false;
+    let running = false;
+    const poll = async () => {
+      if (running || disposed) return;
+      running = true;
+      try {
+        const live = await rpc.call("live", {
+          threadId,
+          afterRevision: revisionRef.current,
+        });
+        if (disposed) return;
+        const revisionChanged = live.revision > revisionRef.current;
+        if (live.batchId !== liveBatchRef.current) {
+          detach();
+          liveBatchRef.current = live.batchId;
+          revisionRef.current = -1;
+        }
+        revisionRef.current = Math.max(revisionRef.current, live.revision);
+
+        if (live.batchId && live.annotations.length > 0) {
+          const label = pluralizeAnnotations(live.annotations.length);
+          const attached = attachedRef.current;
+          if (!attached) {
+            if (!composerRef.current.text.includes(label)) {
+              composerRef.current.insertMention({
+                provider: "browser-comments",
+                id: live.batchId,
+                label,
+              });
+            }
+            attachedRef.current = { batchId: live.batchId, label };
+          } else if (attached.label !== label) {
+            composerRef.current.updateText((text) => removeMentionLabel(text, attached.label));
+            composerRef.current.insertMention({
+              provider: "browser-comments",
+              id: live.batchId,
+              label,
+            });
+            attachedRef.current = { batchId: live.batchId, label };
+          }
+        } else if (!live.active || revisionChanged) {
+          detach();
+        }
+      } catch {
+        // A short gap is normal while the Browser lease is being established.
+      } finally {
+        running = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 250);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [connectionState, detach, rpc, threadId]);
+
+  useRealtime(
+    "annotate-session",
+    useCallback(
+      (rawPayload) => {
+        const payload = rawPayload as SessionEvent;
+        if (!threadId || payload.threadId !== threadId) return;
+        if (payload.status === "sent" || payload.status === "cancelled") detach();
+      },
+      [detach, threadId],
+    ),
+  );
+}
+
+function DesignChangeDetails({ designChange }: { designChange: DesignChange | null }) {
+  if (!designChange) return null;
+  const changes = [
+    ...(designChange.text ? [{ property: "Text", ...designChange.text }] : []),
+    ...designChange.declarations.map((change) => ({
+      property: change.property,
+      previousValue: change.previousValue,
+      value: change.value,
+    })),
+  ];
+  if (changes.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-1 rounded-lg bg-muted/60 p-2 font-mono text-[11px] leading-4">
+      {changes.map((change) => (
+        <div key={change.property} className="grid grid-cols-[minmax(5rem,auto)_1fr] gap-2">
+          <span className="truncate text-muted-foreground">{change.property}</span>
+          <span className="min-w-0 break-words">
+            <span className="text-muted-foreground line-through">{change.previousValue}</span>
+            <span aria-hidden className="px-1 text-muted-foreground">→</span>
+            <span>{change.value}</span>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SentAnnotationsHover() {
+  useBrowserAnnotationsComposerSync();
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
   const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
   const closeTimerRef = useRef<number | null>(null);
   const requestRef = useRef(0);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const [batchId, setBatchId] = useState<string | null>(null);
+  const [editable, setEditable] = useState(false);
   const [annotations, setAnnotations] = useState<LiveAnnotation[]>([]);
   const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({});
 
@@ -134,6 +271,8 @@ function SentAnnotationsHover() {
     cancelClose();
     closeTimerRef.current = window.setTimeout(() => {
       setAnchor(null);
+      setBatchId(null);
+      setEditable(false);
       setAnnotations([]);
     }, 140);
   }, [cancelClose]);
@@ -169,8 +308,12 @@ function SentAnnotationsHover() {
       });
       const request = ++requestRef.current;
       if (!threadId) return;
+      setBatchId(match.batchId);
       void rpc.call("batch", { threadId, batchId: match.batchId }).then((result) => {
-        if (request === requestRef.current) setAnnotations(result.annotations);
+        if (request === requestRef.current) {
+          setEditable(result.editable);
+          setAnnotations(result.annotations);
+        }
       });
     };
     const leave = (event: MouseEvent) => {
@@ -187,6 +330,35 @@ function SentAnnotationsHover() {
       cancelClose();
     };
   }, [cancelClose, closeSoon, rpc, threadId]);
+
+  const editAnnotation = useCallback(
+    async (annotationId: string) => {
+      if (!threadId || !editable) return;
+      const result = await rpc.call("mutate", { threadId, annotationId, action: "open" });
+      if (!result.changed) return;
+      setAnchor(null);
+      setBatchId(null);
+      setEditable(false);
+      setAnnotations([]);
+    },
+    [editable, rpc, threadId],
+  );
+
+  const deleteAnnotation = useCallback(
+    async (annotationId: string) => {
+      if (!threadId || !batchId || !editable) return;
+      const result = await rpc.call("mutate", { threadId, annotationId, action: "delete" });
+      if (!result.changed) return;
+      const next = annotations.filter((annotation) => annotation.id !== annotationId);
+      setAnnotations(next);
+      if (next.length === 0) {
+        setAnchor(null);
+        setBatchId(null);
+        setEditable(false);
+      }
+    },
+    [annotations, batchId, editable, rpc, threadId],
+  );
 
   if (!anchor || annotations.length === 0) return null;
   return createPortal(
@@ -216,8 +388,35 @@ function SentAnnotationsHover() {
                 <span className="rounded-md bg-muted px-1.5 py-0.5">{annotation.tag}</span>
                 <span className="truncate">{annotation.target}</span>
               </div>
-              <p className="mt-2 whitespace-pre-wrap text-sm">{annotation.comment}</p>
+              {annotation.comment ? (
+                <p className="mt-2 whitespace-pre-wrap text-sm">{annotation.comment}</p>
+              ) : null}
+              <DesignChangeDetails designChange={annotation.designChange} />
             </div>
+            {editable ? (
+              <div className="flex shrink-0 items-center">
+                <button
+                  type="button"
+                  className="rounded-md p-1.5 text-muted-foreground hover:bg-state-hover hover:text-foreground"
+                  aria-label={`Edit annotation ${index + 1}`}
+                  onClick={() => void editAnnotation(annotation.id)}
+                >
+                  <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4">
+                    <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md p-1.5 text-muted-foreground hover:bg-state-hover hover:text-destructive"
+                  aria-label={`Delete annotation ${index + 1}`}
+                  onClick={() => void deleteAnnotation(annotation.id)}
+                >
+                  <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4">
+                    <path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5" />
+                  </svg>
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       ))}
@@ -226,248 +425,11 @@ function SentAnnotationsHover() {
   );
 }
 
-function BrowserCommentsComposer() {
-  const rpc = useRpc<typeof rpcContract>();
-  const composer = useComposer();
-  const connectionState = useRealtimeConnectionState();
-  const revisionRef = useRef(-1);
-  const liveBatchRef = useRef<string | null>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const closeTimerRef = useRef<number | null>(null);
-  const [annotations, setAnnotations] = useState<LiveAnnotation[]>([]);
-  const [open, setOpen] = useState(false);
-  const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({});
-  const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
-
-  useEffect(() => {
-    revisionRef.current = -1;
-    liveBatchRef.current = null;
-    setAnnotations([]);
-    setOpen(false);
-  }, [threadId]);
-
-  useEffect(() => {
-    if (!threadId) return;
-    let disposed = false;
-    let running = false;
-    const poll = async () => {
-      if (running || disposed) return;
-      running = true;
-      try {
-        const live = await rpc.call("live", {
-          threadId,
-          afterRevision: revisionRef.current,
-        });
-        if (disposed) return;
-        if (live.batchId !== liveBatchRef.current) {
-          liveBatchRef.current = live.batchId;
-          revisionRef.current = -1;
-        }
-        if (live.revision > revisionRef.current || live.annotations.length > 0) {
-          revisionRef.current = Math.max(revisionRef.current, live.revision);
-          setAnnotations(live.annotations);
-          if (live.annotations.length === 0) setOpen(false);
-        } else if (!live.active) {
-          revisionRef.current = -1;
-          liveBatchRef.current = null;
-          setAnnotations([]);
-          setOpen(false);
-        }
-      } catch {
-        // A short gap is normal while the Browser lease is being established.
-      } finally {
-        running = false;
-      }
-    };
-    void poll();
-    const timer = window.setInterval(() => void poll(), 250);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [connectionState, rpc, threadId]);
-
-  useRealtime(
-    "annotate-session",
-    useCallback(
-      (rawPayload) => {
-        const payload = rawPayload as SessionEvent;
-        if (!threadId || payload.threadId !== threadId) return;
-        if (payload.status === "sent" || payload.status === "cancelled") {
-          setAnnotations([]);
-          setOpen(false);
-        }
-      },
-      [threadId],
-    ),
-  );
-
-  const count = annotations.length;
-  const label = pluralizeAnnotations(count);
-
-  useEffect(() => {
-    if (!open) return;
-    const rect = triggerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setPopupStyle({
-      left: Math.max(12, Math.min(rect.left, window.innerWidth - 396)),
-      bottom: window.innerHeight - rect.top + 8,
-    });
-    const close = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (triggerRef.current?.contains(target)) return;
-      if ((target as Element).closest?.("[data-browser-annotations-popover]")) return;
-      setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
-
-  const showDetails = useCallback(() => {
-    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
-    setOpen(true);
-  }, []);
-
-  const hideDetailsSoon = useCallback(() => {
-    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
-    closeTimerRef.current = window.setTimeout(() => setOpen(false), 140);
-  }, []);
-
-  const removeAnnotation = useCallback(
-    async (annotationId: string) => {
-      if (composer.scope.kind !== "thread") return;
-      const changed = await rpc.call("mutate", {
-        threadId: composer.scope.threadId,
-        annotationId,
-        action: "delete",
-      });
-      if (!changed.changed) return;
-      const next = annotations.filter((annotation) => annotation.id !== annotationId);
-      setAnnotations(next);
-      if (next.length === 0) setOpen(false);
-    },
-    [annotations, composer.scope, rpc],
-  );
-
-  const openAnnotationEditor = useCallback(async (annotationId: string) => {
-    if (composer.scope.kind !== "thread") return;
-    const changed = await rpc.call("mutate", {
-      threadId: composer.scope.threadId,
-      annotationId,
-      action: "open",
-    });
-    if (!changed.changed) return;
-    setOpen(false);
-  }, [composer.scope, rpc]);
-
-  const discard = useCallback(async () => {
-    if (composer.scope.kind !== "thread") return;
-    await rpc.call("discard", { threadId: composer.scope.threadId });
-    setAnnotations([]);
-    setOpen(false);
-  }, [composer.scope, rpc]);
-
-  if (count === 0) return null;
-
-  return (
-    <div className="flex justify-start px-1 py-1">
-      <div className="flex h-8 w-fit items-center rounded-lg border border-border bg-card text-sm text-foreground shadow-sm">
-        <button
-          ref={triggerRef}
-          type="button"
-          className="flex h-full items-center gap-2 rounded-l-lg px-2.5 hover:bg-state-hover"
-          aria-label={`Show ${label}`}
-          aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
-          onMouseEnter={showDetails}
-          onMouseLeave={hideDetailsSoon}
-        >
-          <span aria-hidden className="text-muted-foreground">▢</span>
-          <span>{label}</span>
-        </button>
-        <button
-          type="button"
-          className="flex size-8 items-center justify-center rounded-r-lg text-muted-foreground hover:bg-state-hover hover:text-foreground"
-          aria-label="Remove browser annotations"
-          onClick={() => void discard()}
-        >
-          ×
-        </button>
-      </div>
-      {open
-        ? createPortal(
-            <div
-              data-browser-annotations-popover=""
-              className="fixed z-[1000] max-h-[min(28rem,70vh)] w-96 max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-2xl"
-              style={popupStyle}
-              onMouseEnter={showDetails}
-              onMouseLeave={hideDetailsSoon}
-            >
-              {annotations.map((annotation, index) => (
-                <div
-                  key={annotation.id}
-                  className="border-b border-border p-2 last:border-b-0"
-                >
-                  <div className="flex items-start gap-2">
-                    {annotation.previewDataUrl ? (
-                      <img
-                        src={annotation.previewDataUrl}
-                        alt=""
-                        className="mt-0.5 size-10 rounded-md border border-border object-cover"
-                      />
-                    ) : (
-                      <div className="mt-0.5 flex size-10 items-center justify-center rounded-md border border-border bg-muted text-xs text-muted-foreground">
-                        {index + 1}
-                      </div>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span className="rounded-md bg-muted px-1.5 py-0.5">{annotation.tag}</span>
-                        <span className="truncate">{annotation.target}</span>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="px-1.5 text-muted-foreground hover:text-foreground"
-                      aria-label={`Edit annotation ${index + 1}`}
-                      onClick={() => void openAnnotationEditor(annotation.id)}
-                    >
-                      <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4">
-                        <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      className="px-1.5 text-muted-foreground hover:text-destructive"
-                      aria-label={`Delete annotation ${index + 1}`}
-                      onClick={() => void removeAnnotation(annotation.id)}
-                    >
-                      <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4">
-                        <path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5" />
-                      </svg>
-                    </button>
-                  </div>
-                  <p className="mt-2 whitespace-pre-wrap text-sm">{annotation.comment}</p>
-                </div>
-              ))}
-            </div>,
-            document.body,
-          )
-        : null}
-    </div>
-  );
-}
-
 export default definePluginApp((app) => {
   app.slots.experimental_browserToolbarAction({
     id: "browser-annotate",
     title: "Browser Annotate",
     component: BrowserAnnotateAction,
-  });
-  app.composer.customize({
-    id: "browser-comments",
-    scopes: ["thread"],
-    banners: [{ id: "annotations", chrome: "bare", component: BrowserCommentsComposer }],
   });
   app.slots.experimental_appOverlay({
     id: "sent-annotation-hover",

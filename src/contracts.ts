@@ -12,11 +12,57 @@ const rectSchema = z
   })
   .strict();
 
+const declarationChangeSchema = z
+  .object({
+    property: z.enum([
+      "color",
+      "background-color",
+      "opacity",
+      "font-family",
+      "font-size",
+      "font-weight",
+      "border-radius",
+      "border-color",
+      "border-width",
+      "width",
+      "height",
+      "padding-top",
+      "padding-right",
+      "padding-bottom",
+      "padding-left",
+      "margin-top",
+      "margin-right",
+      "margin-bottom",
+      "margin-left",
+      "flex-direction",
+      "justify-content",
+      "align-items",
+      "gap",
+      "row-gap",
+      "column-gap",
+    ]),
+    previousValue: z.string().max(1000),
+    value: z.string().max(1000),
+  })
+  .strict();
+
+export const designChangeSchema = z
+  .object({
+    text: z
+      .object({ previousValue: z.string().max(4000), value: z.string().max(4000) })
+      .strict()
+      .nullable(),
+    declarations: z.array(declarationChangeSchema).max(26),
+  })
+  .strict();
+export type DesignChange = z.infer<typeof designChangeSchema>;
+
 export const annotationSchema = z
   .object({
     id: idSchema,
     kind: z.literal("element"),
-    comment: z.string().trim().min(1).max(4000),
+    comment: z.string().trim().max(4000),
+    designChange: designChangeSchema.nullable(),
     selector: z.string().max(2000),
     tag: z.string().max(64),
     classes: z.string().max(2000).nullable(),
@@ -34,7 +80,20 @@ export const annotationSchema = z
       .refine((value) => Object.keys(value).length <= 30, "Too many metadata fields"),
     rect: rectSchema,
   })
-  .strict();
+  .strict()
+  .refine(
+    (annotation) =>
+      annotation.comment.length > 0 ||
+      Boolean(
+        annotation.designChange &&
+          ((annotation.designChange.text !== null &&
+            annotation.designChange.text.value !== annotation.designChange.text.previousValue) ||
+            annotation.designChange.declarations.some(
+              (change) => change.value !== change.previousValue,
+            )),
+      ),
+    "Annotation needs a comment or a design change",
+  );
 export type Annotation = z.infer<typeof annotationSchema>;
 
 export const screenshotSchema = z
@@ -64,6 +123,7 @@ const liveAnnotationSchema = z
     tag: z.string(),
     target: z.string(),
     comment: z.string(),
+    designChange: designChangeSchema.nullable(),
     previewDataUrl: z.string().nullable(),
   })
   .strict();
@@ -182,7 +242,9 @@ export const rpcContract = {
   },
   batch: {
     input: z.object({ threadId: idSchema, batchId: idSchema }).strict(),
-    output: z.object({ annotations: z.array(liveAnnotationSchema) }).strict(),
+    output: z
+      .object({ editable: z.boolean(), annotations: z.array(liveAnnotationSchema) })
+      .strict(),
   },
   draft: {
     input: z.object({ threadId: idSchema }).strict(),

@@ -27,9 +27,25 @@ type ActiveSession = {
   wsEndpoint: string | null;
   batchId: string;
   screenshots: Map<string, Screenshot>;
+  imagePaths: Map<string, string>;
+  stagedRevision: number;
+  finishing: Promise<void> | null;
 };
 
 const oneLine = (value: string) => value.replace(/\s+/g, " ").trim();
+
+function renderDesignChange(annotation: Batch["annotations"][number]): string[] {
+  const design = annotation.designChange;
+  if (!design) return [];
+  return [
+    ...(design.text && design.text.value !== design.text.previousValue
+      ? [`text: ${design.text.previousValue} -> ${design.text.value}`]
+      : []),
+    ...design.declarations
+      .filter((change) => change.value !== change.previousValue)
+      .map((change) => `${change.property}: ${change.previousValue} -> ${change.value}`),
+  ];
+}
 
 export function renderBatch(batch: Batch): string {
   const lines = ["# Browser comments:", ""];
@@ -68,7 +84,12 @@ export function renderBatch(batch: Batch): string {
     }
     lines.push(`Saved marker screenshot: attached as a labeled image for Comment ${index + 1}`);
     lines.push("Comment:");
-    lines.push(annotation.comment);
+    if (annotation.comment) lines.push(annotation.comment);
+    const designChanges = renderDesignChange(annotation);
+    if (designChanges.length > 0) {
+      lines.push("Requested design changes:");
+      lines.push(...designChanges);
+    }
     lines.push("");
   });
   return lines.join("\n");
@@ -252,6 +273,80 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     }
   }
 
+  async function stageBatch(
+    session: ActiveSession,
+    batch: Batch,
+    previewDataUrl: string | null,
+  ): Promise<PendingBatch | null> {
+    const existing = pending.get(session.batchId);
+    if (existing?.sent) return existing;
+    if (batch.annotations.length === 0) {
+      pending.delete(session.batchId);
+      return null;
+    }
+    for (const annotation of batch.annotations) {
+      if (session.imagePaths.has(annotation.id)) continue;
+      const screenshot = session.screenshots.get(annotation.id);
+      if (!screenshot) continue;
+      try {
+        session.imagePaths.set(
+          annotation.id,
+          await storeScreenshot(session.scope.threadId, annotation.id, screenshot),
+        );
+      } catch (error) {
+        bb.log.warn(
+          `Could not store annotation screenshot: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    const item: PendingBatch = existing ?? {
+      id: session.batchId,
+      threadId: session.scope.threadId,
+      createdAt: Date.now(),
+      sent: false,
+      batch,
+      images: [],
+      previewDataUrl,
+    };
+    item.batch = batch;
+    item.images = batch.annotations.flatMap((annotation) => {
+      const path = session.imagePaths.get(annotation.id);
+      return path ? [{ annotationId: annotation.id, path }] : [];
+    });
+    item.previewDataUrl = previewDataUrl ?? item.previewDataUrl;
+    pending.set(item.id, item);
+    await persistBatch(item).catch((error) => {
+      bb.log.warn(
+        `Could not persist annotation details: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+    return item;
+  }
+
+  function finishSession(session: ActiveSession, item: PendingBatch): Promise<void> {
+    if (session.finishing) return session.finishing;
+    session.finishing = (async () => {
+      if (session.controller.signal.aborted) return;
+      if (session.wsEndpoint) {
+        await host.call(
+          "cleanupSession",
+          { wsEndpoint: session.wsEndpoint },
+          { hostId: session.hostId, timeoutMs: 15_000 },
+        ).catch(() => undefined);
+      }
+      session.controller.abort();
+      bb.realtime.publish("annotate-session", {
+        threadId: item.threadId,
+        tabId: session.tabId,
+        status: "sent",
+        count: item.batch.annotations.length,
+        batchId: item.id,
+      });
+    })();
+    return session.finishing;
+  }
+
   bb.ui.registerMentionProvider({
     id: "browser-comments",
     label: "Browser comments",
@@ -269,12 +364,35 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     },
     async resolve(itemId) {
       prunePending();
-      const item = pending.get(itemId);
+      let item = pending.get(itemId);
       if (!item) throw new Error("Browser comments expired or were removed");
+      const session = sessions.get(item.threadId);
+      if (session?.batchId === item.id && session.wsEndpoint) {
+        const latest = await host.call(
+          "readSession",
+          { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
+          { hostId: session.hostId, timeoutMs: 15_000 },
+        );
+        if (latest.capture) {
+          session.screenshots.set(latest.capture.annotationId, latest.capture.image);
+        }
+        if (latest.batch) {
+          const latestItem = await stageBatch(
+            session,
+            latest.batch,
+            latest.preview
+              ? `data:${latest.preview.mimeType};base64,${latest.preview.base64}`
+              : null,
+          );
+          if (!latestItem) throw new Error("Browser comments were removed before sending");
+          item = latestItem;
+          session.stagedRevision = Math.max(session.stagedRevision, latest.revision);
+        }
+      }
       const annotationById = new Map(
         item.batch.annotations.map((annotation, index) => [annotation.id, { annotation, index }]),
       );
-      return {
+      const resolved = {
         context: renderBatch(item.batch),
         experimental_images: item.images.flatMap((image) => {
           const match = annotationById.get(image.annotationId);
@@ -289,6 +407,9 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           ];
         }),
       };
+      item.sent = true;
+      if (session?.batchId === item.id) void finishSession(session, item);
+      return resolved;
     },
   });
 
@@ -305,6 +426,9 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         wsEndpoint: null,
         batchId: `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`,
         screenshots: new Map(),
+        imagePaths: new Map(),
+        stagedRevision: -1,
+        finishing: null,
       };
       sessions.set(threadId, session);
       await bb.sdk.experimental_desktopBrowsers.revealTab({ ...scope, tabId });
@@ -440,62 +564,27 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         };
       }
       if (result.status === "sent" && result.batch) {
-        const images: Array<{ annotationId: string; path: string }> = [];
-        for (const annotation of result.batch.annotations) {
-          const image = session.screenshots.get(annotation.id);
-          if (!image) continue;
-          try {
-            images.push({
-              annotationId: annotation.id,
-              path: await storeScreenshot(threadId, annotation.id, image),
-            });
-          } catch (error) {
-            bb.log.warn(
-              `Could not store annotation screenshot: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-        }
-        const item: PendingBatch = {
-          id: session.batchId,
-          threadId,
-          createdAt: Date.now(),
-          sent: false,
-          batch: result.batch,
-          images,
-          previewDataUrl: result.preview
+        const item = await stageBatch(
+          session,
+          result.batch,
+          result.preview
             ? `data:${result.preview.mimeType};base64,${result.preview.base64}`
             : null,
-        };
-        pending.set(item.id, item);
-        await persistBatch(item).catch((error) => {
-          bb.log.warn(
-            `Could not persist annotation details: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        });
+        );
+        if (!item) throw new Error("Add at least one annotation before sending");
         try {
           await bb.sdk.threads.send({
             threadId,
             mode: "steer-if-active",
             input: [buildBatchMentionInput(bb.pluginId, item)],
           });
-          item.sent = true;
-          bb.realtime.publish("annotate-session", {
-            threadId,
-            tabId: session.tabId,
-            status: "sent",
-            count: item.batch.annotations.length,
-            batchId: item.id,
-          });
+          if (!item.sent) {
+            item.sent = true;
+          }
+          await finishSession(session, item);
         } catch (error) {
           pending.delete(item.id);
           throw error;
-        } finally {
-          await host.call(
-            "cleanupSession",
-            { wsEndpoint: session.wsEndpoint },
-            { hostId: session.hostId, timeoutMs: 15_000 },
-          ).catch(() => undefined);
-          session.controller.abort();
         }
         return {
           active: false,
@@ -515,6 +604,14 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       const previewDataUrl = result.preview
         ? `data:${result.preview.mimeType};base64,${result.preview.base64}`
         : null;
+      if (
+        result.revision > session.stagedRevision ||
+        Boolean(result.capture) ||
+        !pending.has(session.batchId)
+      ) {
+        await stageBatch(session, result.batch, previewDataUrl);
+        session.stagedRevision = result.revision;
+      }
       return {
         active: true,
         revision: result.revision,
@@ -524,6 +621,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           tag: annotation.tag,
           target: annotation.target,
           comment: annotation.comment,
+          designChange: annotation.designChange,
           previewDataUrl,
         })),
       };
@@ -538,7 +636,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
             tabId: session.tabId,
           });
         }
-        return host.call(
+        const changed = await host.call(
           "mutateSession",
           {
             wsEndpoint: session.wsEndpoint,
@@ -547,6 +645,27 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           },
           { hostId: session.hostId, timeoutMs: 15_000 },
         );
+        if (changed.changed && action === "delete") {
+          const latest = await host.call(
+            "readSession",
+            { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
+            { hostId: session.hostId, timeoutMs: 15_000 },
+          );
+          if (latest.capture) {
+            session.screenshots.set(latest.capture.annotationId, latest.capture.image);
+          }
+          if (latest.batch) {
+            await stageBatch(
+              session,
+              latest.batch,
+              latest.preview
+                ? `data:${latest.preview.mimeType};base64,${latest.preview.base64}`
+                : null,
+            );
+            session.stagedRevision = Math.max(session.stagedRevision, latest.revision);
+          }
+        }
+        return changed;
       }
       const item = [...pending.values()].find(
         (candidate) =>
@@ -570,13 +689,15 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     async batch({ threadId, batchId }) {
       prunePending();
       const item = await loadBatch(threadId, batchId);
-      if (!item) return { annotations: [] };
+      if (!item) return { editable: false, annotations: [] };
       return {
+        editable: sessions.get(threadId)?.batchId === batchId,
         annotations: item.batch.annotations.map((annotation) => ({
           id: annotation.id,
           tag: annotation.tag,
           target: annotation.target,
           comment: annotation.comment,
+          designChange: annotation.designChange,
           previewDataUrl: item.previewDataUrl,
         })),
       };
@@ -595,6 +716,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           tag: annotation.tag,
           target: annotation.target,
           comment: annotation.comment,
+          designChange: annotation.designChange,
           previewDataUrl: item.previewDataUrl,
         })),
       };
