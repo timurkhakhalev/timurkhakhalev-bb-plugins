@@ -16,6 +16,15 @@ type PendingBatch = {
   staged: boolean;
   batch: Batch;
   images: Array<{ annotationId: string; path: string }>;
+  previewDataUrl: string | null;
+};
+
+type ActiveSession = {
+  controller: AbortController;
+  tabId: string;
+  hostId: string;
+  wsEndpoint: string | null;
+  batchId: string;
 };
 
 const oneLine = (value: string) => value.replace(/\s+/g, " ").trim();
@@ -65,7 +74,7 @@ export function renderBatch(batch: Batch): string {
 
 export default function browserAnnotate(bb: BbPluginApi): void {
   const host = bb.hosts.experimental_client({ contract: hostContract });
-  const sessions = new Map<string, { controller: AbortController; tabId: string }>();
+  const sessions = new Map<string, ActiveSession>();
   const pending = new Map<string, PendingBatch>();
 
   const prunePending = () => {
@@ -198,11 +207,19 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       const scope = await findScope(threadId, tabId);
       sessions.get(threadId)?.controller.abort();
       const controller = new AbortController();
-      sessions.set(threadId, { controller, tabId });
+      const session: ActiveSession = {
+        controller,
+        tabId,
+        hostId: scope.hostId,
+        wsEndpoint: null,
+        batchId: `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`,
+      };
+      sessions.set(threadId, session);
       await bb.sdk.experimental_desktopBrowsers.revealTab({ ...scope, tabId });
 
-      void withLease(scope, tabId, controller.signal, async (wsEndpoint) =>
-        host.call(
+      void withLease(scope, tabId, controller.signal, async (wsEndpoint) => {
+        session.wsEndpoint = wsEndpoint;
+        return host.call(
           "annotateSession",
           { wsEndpoint },
           {
@@ -210,8 +227,8 @@ export default function browserAnnotate(bb: BbPluginApi): void {
             signal: controller.signal,
             timeoutMs: 30 * 60_000,
           },
-        ),
-      )
+        );
+      })
         .then(async (result) => {
           if (result.cancelled || !result.batch) {
             bb.realtime.publish("annotate-session", {
@@ -235,7 +252,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
               );
             }
           }
-          const id = `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`;
+          const id = session.batchId;
           pending.set(id, {
             id,
             threadId,
@@ -243,6 +260,9 @@ export default function browserAnnotate(bb: BbPluginApi): void {
             staged: false,
             batch: result.batch,
             images,
+            previewDataUrl: result.screenshots[0]
+              ? `data:${result.screenshots[0].image.mimeType};base64,${result.screenshots[0].image.base64}`
+              : null,
           });
           bb.realtime.publish("annotate-session", {
             threadId,
@@ -298,6 +318,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
             id: item.id,
             threadId: item.threadId,
             label: `${item.batch.annotations.length} browser comment${item.batch.annotations.length === 1 ? "" : "s"}`,
+            count: item.batch.annotations.length,
           })),
       };
     },
@@ -307,6 +328,111 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       if (!item || item.threadId !== threadId) return { staged: false };
       item.staged = true;
       return { staged: true };
+    },
+
+    async live({ threadId, afterRevision }) {
+      const session = sessions.get(threadId);
+      if (!session || session.wsEndpoint === null) {
+        return {
+          active: Boolean(session),
+          revision: Math.max(0, afterRevision),
+          batchId: session?.batchId ?? null,
+          annotations: [],
+        };
+      }
+      const result = await host.call(
+        "readSession",
+        { wsEndpoint: session.wsEndpoint, afterRevision },
+        { hostId: session.hostId, timeoutMs: 15_000 },
+      );
+      if (!result.batch) {
+        return {
+          active: true,
+          revision: result.revision,
+          batchId: session.batchId,
+          annotations: [],
+        };
+      }
+      const previewDataUrl = result.preview
+        ? `data:${result.preview.mimeType};base64,${result.preview.base64}`
+        : null;
+      return {
+        active: true,
+        revision: result.revision,
+        batchId: session.batchId,
+        annotations: result.batch.annotations.map((annotation) => ({
+          id: annotation.id,
+          tag: annotation.tag,
+          target: annotation.target,
+          comment: annotation.comment,
+          previewDataUrl,
+        })),
+      };
+    },
+
+    async mutate({ threadId, annotationId, action, comment }) {
+      const session = sessions.get(threadId);
+      if (session?.wsEndpoint) {
+        return host.call(
+          "mutateSession",
+          {
+            wsEndpoint: session.wsEndpoint,
+            annotationId,
+            action,
+            ...(comment === undefined ? {} : { comment }),
+          },
+          { hostId: session.hostId, timeoutMs: 15_000 },
+        );
+      }
+      const item = [...pending.values()].find(
+        (candidate) =>
+          candidate.threadId === threadId &&
+          candidate.batch.annotations.some((annotation) => annotation.id === annotationId),
+      );
+      if (!item) return { changed: false };
+      if (action === "delete") {
+        item.batch.annotations = item.batch.annotations.filter(
+          (annotation) => annotation.id !== annotationId,
+        );
+        item.images = item.images.filter((image) => image.annotationId !== annotationId);
+      } else if (comment) {
+        item.batch.annotations = item.batch.annotations.map((annotation) =>
+          annotation.id === annotationId ? { ...annotation, comment } : annotation,
+        );
+      } else {
+        return { changed: false };
+      }
+      return { changed: true };
+    },
+
+    async draft({ threadId }) {
+      prunePending();
+      const item = [...pending.values()]
+        .filter((candidate) => candidate.threadId === threadId)
+        .sort((left, right) => right.createdAt - left.createdAt)[0];
+      if (!item) return { batchId: null, annotations: [] };
+      return {
+        batchId: item.id,
+        annotations: item.batch.annotations.map((annotation) => ({
+          id: annotation.id,
+          tag: annotation.tag,
+          target: annotation.target,
+          comment: annotation.comment,
+          previewDataUrl: item.previewDataUrl,
+        })),
+      };
+    },
+
+    async discard({ threadId }) {
+      const session = sessions.get(threadId);
+      session?.controller.abort();
+      let discarded = Boolean(session);
+      for (const [id, item] of pending) {
+        if (item.threadId !== threadId) continue;
+        pending.delete(id);
+        discarded = true;
+      }
+      return { discarded };
     },
   };
 

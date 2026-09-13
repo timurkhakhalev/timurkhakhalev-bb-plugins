@@ -77,6 +77,32 @@ export const hostContract = {
       })
       .strict(),
   },
+  readSession: {
+    input: z
+      .object({
+        wsEndpoint: z.string().url(),
+        afterRevision: z.number().int().min(-1),
+      })
+      .strict(),
+    output: z
+      .object({
+        revision: z.number().int().min(0),
+        batch: batchSchema.nullable(),
+        preview: screenshotSchema.nullable(),
+      })
+      .strict(),
+  },
+  mutateSession: {
+    input: z
+      .object({
+        wsEndpoint: z.string().url(),
+        annotationId: idSchema,
+        action: z.enum(["delete", "edit"]),
+        comment: z.string().trim().min(1).max(4000).optional(),
+      })
+      .strict(),
+    output: z.object({ changed: z.boolean() }).strict(),
+  },
 } satisfies PluginRpcContract;
 
 /** app.tsx ↔ server */
@@ -103,7 +129,14 @@ export const rpcContract = {
     output: z
       .object({
         batches: z.array(
-          z.object({ id: idSchema, threadId: idSchema, label: z.string() }).strict(),
+          z
+            .object({
+              id: idSchema,
+              threadId: idSchema,
+              label: z.string(),
+              count: z.number().int().min(0),
+            })
+            .strict(),
         ),
       })
       .strict(),
@@ -111,5 +144,65 @@ export const rpcContract = {
   stage: {
     input: z.object({ threadId: idSchema, batchId: idSchema }).strict(),
     output: z.object({ staged: z.boolean() }).strict(),
+  },
+  live: {
+    input: z
+      .object({
+        threadId: idSchema,
+        afterRevision: z.number().int().min(-1),
+      })
+      .strict(),
+    output: z
+      .object({
+        active: z.boolean(),
+        revision: z.number().int().min(0),
+        batchId: idSchema.nullable(),
+        annotations: z.array(
+          z
+            .object({
+              id: idSchema,
+              tag: z.string(),
+              target: z.string(),
+              comment: z.string(),
+              previewDataUrl: z.string().nullable(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
+  mutate: {
+    input: z
+      .object({
+        threadId: idSchema,
+        annotationId: idSchema,
+        action: z.enum(["delete", "edit"]),
+        comment: z.string().trim().min(1).max(4000).optional(),
+      })
+      .strict(),
+    output: z.object({ changed: z.boolean() }).strict(),
+  },
+  draft: {
+    input: z.object({ threadId: idSchema }).strict(),
+    output: z
+      .object({
+        batchId: idSchema.nullable(),
+        annotations: z.array(
+          z
+            .object({
+              id: idSchema,
+              tag: z.string(),
+              target: z.string(),
+              comment: z.string(),
+              previewDataUrl: z.string().nullable(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
+  discard: {
+    input: z.object({ threadId: idSchema }).strict(),
+    output: z.object({ discarded: z.boolean() }).strict(),
   },
 } satisfies PluginRpcContract;

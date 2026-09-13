@@ -7,11 +7,12 @@
 1. Откройте страницу во встроенном Browser.
 2. Нажмите **Annotate** прямо в панели Browser рядом с адресной строкой.
 3. Выберите DOM-элемент, напишите комментарий и сохраните его.
-4. Повторите это для остальных элементов. Маркер можно открыть, чтобы изменить или удалить комментарий.
-5. Нажмите **Send** в плавающей панели страницы.
-6. В composer появится mention `N browser comments`. Допишите обычный запрос и отправьте его штатной кнопкой.
+4. После каждого сохранения плашка в composer сразу обновляет число и список аннотаций. Из неё можно изменить или удалить отдельный комментарий либо убрать весь batch.
+5. Повторите это для остальных элементов. Маркер на странице также можно открыть, чтобы изменить или удалить комментарий.
+6. Нажмите **Send** в компактной панели **Annotate Page**.
+7. Live-плашка остаётся в composer, а batch становится mention `N annotations`. Допишите обычный запрос и отправьте его штатной кнопкой.
 
-`Cancel`, `Escape` или повторное нажатие **Annotate** завершают сессию без добавления комментариев в composer.
+`Escape`, крестик на composer-плашке или повторное нажатие **Annotate** завершают сессию без добавления комментариев в итоговый запрос.
 
 ## Что получает агент
 
@@ -35,8 +36,10 @@ Browser toolbar action
   -> server resolves the active thread/tab to a desktop Browser instance
   -> host acquires the tab and injects the element picker
   -> every saved comment queues an immediate CDP screenshot
+  -> composer polls the live revision and renders the current annotation list
+  -> edit/delete actions update the same page overlay
   -> Send stores the screenshots in thread storage
-  -> app inserts a Browser comments mention into the composer
+  -> app finalizes the live card as a Browser comments mention
   -> normal user submit resolves the mention
   -> agent-only text + labeled localImage inputs are appended to that turn
 ```

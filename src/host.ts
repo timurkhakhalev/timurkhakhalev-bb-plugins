@@ -25,6 +25,7 @@ const PAGE_SCRIPT = `
     items: [],
     captureQueue: [],
     seq: 0,
+    revision: 0,
     lastX: -1,
     lastY: -1,
   };
@@ -33,17 +34,13 @@ const PAGE_SCRIPT = `
 
   const css =
     "#__bbAnnBar{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:2147483646;" +
-    "display:flex;align-items:center;gap:8px;padding:6px 10px 6px 14px;border-radius:999px;" +
+    "display:flex;align-items:center;gap:12px;padding:8px 10px 8px 16px;border-radius:999px;" +
     "background:rgba(20,22,28,.96);color:#e8eaf0;font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;" +
     "box-shadow:0 6px 24px rgba(0,0,0,.45);user-select:none}" +
-    "#__bbAnnBar .dot{width:8px;height:8px;border-radius:50%;background:#3b82f6;box-shadow:0 0 8px #3b82f6}" +
-    "#__bbAnnBar .title{font-weight:600}" +
-    "#__bbAnnBar .count{color:#b9bfca;min-width:76px;text-align:center;font-variant-numeric:tabular-nums}" +
+    "#__bbAnnBar .title{font-weight:650}" +
     "#__bbAnnBar button{appearance:none;border:0;border-radius:999px;padding:6px 14px;font:600 13px/1 -apple-system,Segoe UI,Roboto,sans-serif;cursor:pointer}" +
     "#__bbAnnBar .send{background:#3b82f6;color:#fff}" +
     "#__bbAnnBar .send:disabled{opacity:.45;cursor:default}" +
-    "#__bbAnnBar .cancel{background:transparent;color:#9aa0ad}" +
-    "#__bbAnnBar .cancel:hover{color:#fff}" +
     "#__bbAnnTip{position:fixed;z-index:2147483645;pointer-events:none;display:none;background:rgba(20,22,28,.96);color:#e8eaf0;" +
     "font:12px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;padding:6px 10px;border-radius:8px;max-width:70vw;box-shadow:0 4px 16px rgba(0,0,0,.4)}" +
     "#__bbAnnTip b{color:#fff}" +
@@ -77,10 +74,8 @@ const PAGE_SCRIPT = `
 
   const bar = el("__bbAnnBar");
   bar.innerHTML =
-    '<span class="dot"></span><span class="title">Annotate page</span><span class="count">0 annotations</span>' +
-    '<button type="button" class="cancel" data-act="cancel">Cancel</button>' +
+    '<span class="title">Annotate Page</span>' +
     '<button type="button" class="send" data-act="send">Send</button>';
-  const countEl = bar.querySelector(".count");
   const sendBtn = bar.querySelector('[data-act="send"]');
 
   const tip = el("__bbAnnTip");
@@ -227,11 +222,12 @@ const PAGE_SCRIPT = `
   };
 
   const syncBar = () => {
-    countEl.textContent = state.items.length + (state.items.length === 1 ? " annotation" : " annotations");
     sendBtn.disabled = state.items.length === 0 || state.items.some((item) => item.capturePending);
-    sendBtn.textContent = state.items.length > 0 ? "Send " + state.items.length : "Send";
+    sendBtn.textContent = "Send";
     window.__bbAnnotateCount = state.items.length;
   };
+
+  const bumpRevision = () => { state.revision += 1; };
 
   const hideForm = () => {
     form.style.display = "none";
@@ -262,6 +258,7 @@ const PAGE_SCRIPT = `
       if (!comment) { textarea.focus(); return; }
       if (formAnnotation) {
         formAnnotation.comment = comment;
+        bumpRevision();
       } else if (formTarget && state.items.length < 50) {
         const rect = formTarget.getBoundingClientRect();
         const selection = window.getSelection();
@@ -319,6 +316,7 @@ const PAGE_SCRIPT = `
         paintPin(item);
         paintOutline(item);
         state.captureQueue.push({ id: item.id });
+        bumpRevision();
       }
       syncBar();
       hideForm();
@@ -341,6 +339,7 @@ const PAGE_SCRIPT = `
           paintPin(i);
           paintOutline(i);
         });
+        bumpRevision();
         syncBar();
       }
       hideForm();
@@ -417,17 +416,44 @@ const PAGE_SCRIPT = `
     };
   });
 
+  const serializedBatch = () => ({
+    url: location.href,
+    title: document.title || "",
+    viewport: Math.round(window.visualViewport ? window.visualViewport.width : innerWidth) + "x" +
+      Math.round(window.visualViewport ? window.visualViewport.height : innerHeight),
+    dpr: window.devicePixelRatio || 1,
+    annotations: serialize(),
+  });
+
+  window.__bbAnnotateRead = () => ({ revision: state.revision, batch: serializedBatch() });
+  window.__bbAnnotateMutate = (annotationId, action, comment) => {
+    const item = state.items.find((candidate) => candidate.id === annotationId);
+    if (!item) return false;
+    if (action === "edit") {
+      const next = String(comment || "").trim();
+      if (!next) return false;
+      item.comment = next.slice(0, 4000);
+    } else if (action === "delete") {
+      state.items = state.items.filter((candidate) => candidate.id !== annotationId);
+      dropPin(annotationId);
+      dropOutline(annotationId);
+      state.captureQueue = state.captureQueue.filter((capture) => capture.id !== annotationId);
+      state.items.forEach((candidate, index) => {
+        candidate.seq = index + 1;
+        paintPin(candidate);
+      });
+    } else {
+      return false;
+    }
+    bumpRevision();
+    syncBar();
+    return true;
+  };
+
   const done = (kind) => {
     window.__bbAnnotateDone = {
       kind,
-      batch: {
-        url: location.href,
-        title: document.title || "",
-        viewport: Math.round(window.visualViewport ? window.visualViewport.width : innerWidth) + "x" +
-          Math.round(window.visualViewport ? window.visualViewport.height : innerHeight),
-        dpr: window.devicePixelRatio || 1,
-        annotations: serialize(),
-      },
+      batch: serializedBatch(),
     };
     if (kind === "cancel") cleanup();
     else {
@@ -459,6 +485,8 @@ const PAGE_SCRIPT = `
     for (const node of [bar, tip, box, form, style]) node.remove();
     document.documentElement.style.cursor = previousCursor;
     window.__bbAnnotateCleanup = null;
+    window.__bbAnnotateRead = null;
+    window.__bbAnnotateMutate = null;
   };
 
   document.addEventListener("mousemove", onMove, true);
@@ -726,6 +754,43 @@ export default experimental_defineHostEntry({
           ).catch(() => undefined);
         }
       });
+    },
+    readSession: async (input, context) => {
+      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId) => {
+        const raw = await evaluate(
+          connection,
+          sessionId,
+          "window.__bbAnnotateRead ? window.__bbAnnotateRead() : null",
+        );
+        if (raw === null || typeof raw !== "object") {
+          return { revision: Math.max(0, input.afterRevision), batch: null, preview: null };
+        }
+        const value = z
+          .object({ revision: z.number().int().min(0), batch: batchSchema })
+          .parse(raw);
+        if (value.revision <= input.afterRevision) {
+          return { revision: value.revision, batch: null, preview: null };
+        }
+        await connection.request("Page.enable", {}, sessionId).catch(() => undefined);
+        return {
+          revision: value.revision,
+          batch: value.batch,
+          preview: value.batch.annotations.length > 0
+            ? await screenshot(connection, sessionId)
+            : null,
+        };
+      });
+    },
+    mutateSession: async (input, context) => {
+      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId) => ({
+        changed: Boolean(
+          await evaluate(
+            connection,
+            sessionId,
+            `window.__bbAnnotateMutate ? window.__bbAnnotateMutate(${JSON.stringify(input.annotationId)}, ${JSON.stringify(input.action)}, ${JSON.stringify(input.comment ?? null)}) : false`,
+          ),
+        ),
+      }));
     },
   },
 });
