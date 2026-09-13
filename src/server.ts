@@ -1,3 +1,4 @@
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type BbPluginApi, type PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import { batchSchema, hostContract, rpcContract } from "./contracts.js";
 import type { Batch, Screenshot } from "./contracts.js";
@@ -33,6 +34,9 @@ type ActiveSession = {
   stagedRevision: number;
   finishing: Promise<void> | null;
 };
+
+const DRAFT_TTL_MS = 24 * 60 * 60_000;
+const BATCH_STORAGE_DIRECTORY = "browser-comments";
 
 const oneLine = (value: string) => value.replace(/\s+/g, " ").trim();
 
@@ -156,13 +160,6 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     }
   }
 
-  const prunePending = () => {
-    const cutoff = Date.now() - 24 * 60 * 60_000;
-    for (const [id, item] of pending) {
-      if (item.createdAt < cutoff) pending.delete(id);
-    }
-  };
-
   async function findScope(threadId: string, tabId: string) {
     const desktop = bb.sdk.experimental_desktopBrowsers;
     for (const machine of await bb.sdk.hosts.list()) {
@@ -247,12 +244,13 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
   async function storeScreenshot(
     threadId: string,
+    batchId: string,
     annotationId: string,
     screenshot: Screenshot,
   ): Promise<string> {
     const location = await bb.sdk.threads.storageLocation({ threadId });
     const safeId = annotationId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const path = `${location.storageRootPath}/browser-comments/${Date.now()}-${safeId}.jpg`;
+    const path = `${location.storageRootPath}/${BATCH_STORAGE_DIRECTORY}/${batchId}-${safeId}.jpg`;
     await bb.sdk.files.write({
       hostId: location.hostId,
       path,
@@ -265,6 +263,62 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
   const batchThreadKey = (batchId: string) => `browser-comments:batch:${batchId}:thread`;
   const draftBatchKey = (threadId: string) => `browser-comments:thread:${threadId}:draft`;
+  const isSafeBatchId = (batchId: string) => /^[a-zA-Z0-9_-]+$/.test(batchId);
+
+  function batchStoragePath(storageRootPath: string, batchId: string): string {
+    return `${storageRootPath}/${BATCH_STORAGE_DIRECTORY}/${batchId}.json`;
+  }
+
+  function isOwnedBatchPath(storageRootPath: string, path: string): boolean {
+    const directory = resolve(storageRootPath, BATCH_STORAGE_DIRECTORY);
+    const candidate = resolve(path);
+    const pathFromDirectory = relative(directory, candidate);
+    return (
+      pathFromDirectory.length > 0 &&
+      pathFromDirectory !== ".." &&
+      !pathFromDirectory.startsWith(`..${sep}`) &&
+      !isAbsolute(pathFromDirectory)
+    );
+  }
+
+  function isOwnedBatchImagePath(
+    storageRootPath: string,
+    batchId: string,
+    path: string,
+  ): boolean {
+    if (!isSafeBatchId(batchId)) return false;
+    const directory = resolve(storageRootPath, BATCH_STORAGE_DIRECTORY);
+    const candidate = resolve(path);
+    const pathFromDirectory = relative(directory, candidate);
+    const fileName = pathFromDirectory.startsWith(`${batchId}-`)
+      ? pathFromDirectory.slice(batchId.length + 1)
+      : "";
+    return (
+      pathFromDirectory.length > 0 &&
+      !pathFromDirectory.includes(sep) &&
+      /^[a-zA-Z0-9_-]+\.jpg$/.test(fileName)
+    );
+  }
+
+  function isMissingFileError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /ENOENT|not found|does not exist|missing (?:test )?file/i.test(message);
+  }
+
+  async function removeFileIfPresent(
+    hostId: string,
+    storageRootPath: string,
+    path: string,
+  ): Promise<void> {
+    if (!isOwnedBatchPath(storageRootPath, path)) {
+      throw new Error("Refusing to remove a file outside browser annotation storage");
+    }
+    try {
+      await bb.sdk.files.remove({ hostId, path });
+    } catch (error) {
+      if (!isMissingFileError(error)) throw error;
+    }
+  }
 
   async function draftBatchIds(threadId: string): Promise<string[]> {
     const value = await bb.storage.kv.get<unknown>(draftBatchKey(threadId));
@@ -283,11 +337,16 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     else await bb.storage.kv.set(draftBatchKey(threadId), next);
   }
 
+  async function clearBatchReferences(threadId: string, batchId: string): Promise<void> {
+    await bb.storage.kv.delete(batchThreadKey(batchId));
+    await clearDraftPointer(threadId, batchId);
+  }
+
   async function persistBatch(item: PendingBatch): Promise<void> {
     const location = await bb.sdk.threads.storageLocation({ threadId: item.threadId });
     await bb.sdk.files.write({
       hostId: location.hostId,
-      path: `${location.storageRootPath}/browser-comments/${item.id}.json`,
+      path: batchStoragePath(location.storageRootPath, item.id),
       content: JSON.stringify({
         id: item.id,
         threadId: item.threadId,
@@ -300,10 +359,71 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       createParents: true,
     });
     await bb.storage.kv.set(batchThreadKey(item.id), item.threadId);
-    if (item.sent) await clearDraftPointer(item.threadId, item.id);
-    else {
+    if (item.sent) {
+      pending.delete(item.id);
+      await clearDraftPointer(item.threadId, item.id);
+    } else {
       const ids = (await draftBatchIds(item.threadId)).filter((id) => id !== item.id);
       await bb.storage.kv.set(draftBatchKey(item.threadId), [...ids, item.id]);
+    }
+  }
+
+  async function removePersistedBatch(item: PendingBatch): Promise<void> {
+    if (!isSafeBatchId(item.id)) {
+      throw new Error("Refusing to remove a browser annotation batch with an invalid id");
+    }
+    const location = await bb.sdk.threads.storageLocation({ threadId: item.threadId });
+    await removePersistedImages(item);
+    await removeFileIfPresent(
+      location.hostId,
+      location.storageRootPath,
+      batchStoragePath(location.storageRootPath, item.id),
+    );
+    const session = sessions.get(item.threadId);
+    if (session?.batchId === item.id) session.imagePaths.clear();
+    await clearBatchReferences(item.threadId, item.id);
+  }
+
+  async function removePersistedImages(
+    item: PendingBatch,
+    images = item.images,
+    bestEffort = false,
+  ): Promise<Set<string>> {
+    const location = await bb.sdk.threads.storageLocation({ threadId: item.threadId });
+    const removed = new Set<string>();
+    for (const path of [...new Set(images.map((image) => image.path))]) {
+      if (!isOwnedBatchImagePath(location.storageRootPath, item.id, path)) {
+        if (bestEffort) {
+          removed.add(path);
+          continue;
+        }
+        throw new Error("Refusing to remove an annotation file owned by another batch");
+      }
+      try {
+        await removeFileIfPresent(location.hostId, location.storageRootPath, path);
+        removed.add(path);
+      } catch (error) {
+        if (!bestEffort) throw error;
+        bb.log.warn(
+          `Could not remove annotation screenshot: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    return removed;
+  }
+
+  async function prunePending(): Promise<void> {
+    const cutoff = Date.now() - DRAFT_TTL_MS;
+    for (const [id, item] of pending) {
+      if (item.sent || item.createdAt >= cutoff) continue;
+      pending.delete(id);
+      try {
+        await removePersistedBatch(item);
+      } catch (error) {
+        bb.log.warn(
+          `Could not remove expired browser annotation batch: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 
@@ -311,38 +431,71 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     batchId: string,
     expectedThreadId?: string,
   ): Promise<PendingBatch | null> {
+    if (!isSafeBatchId(batchId)) return null;
     const cached = pending.get(batchId);
-    if (cached && (!expectedThreadId || cached.threadId === expectedThreadId)) return cached;
+    if (cached && (!expectedThreadId || cached.threadId === expectedThreadId)) {
+      if (cached.sent || cached.createdAt >= Date.now() - DRAFT_TTL_MS) return cached;
+      pending.delete(batchId);
+      try {
+        await removePersistedBatch(cached);
+      } catch (error) {
+        bb.log.warn(
+          `Could not remove expired browser annotation batch: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return null;
+    }
     try {
       const indexedThreadId = await bb.storage.kv.get<unknown>(batchThreadKey(batchId));
-      const threadId = expectedThreadId ??
-        (typeof indexedThreadId === "string" ? indexedThreadId : null);
-      if (!threadId || (expectedThreadId && indexedThreadId && indexedThreadId !== threadId)) {
+      if (typeof indexedThreadId !== "string" ||
+        (expectedThreadId && indexedThreadId !== expectedThreadId)) {
         return null;
       }
+      const threadId = indexedThreadId;
       const location = await bb.sdk.threads.storageLocation({ threadId });
-      const stored = await bb.sdk.files.read({
-        hostId: location.hostId,
-        path: `${location.storageRootPath}/browser-comments/${batchId}.json`,
-      });
+      let stored;
+      try {
+        stored = await bb.sdk.files.read({
+          hostId: location.hostId,
+          path: batchStoragePath(location.storageRootPath, batchId),
+        });
+      } catch (error) {
+        if (isMissingFileError(error)) await clearBatchReferences(threadId, batchId);
+        return null;
+      }
       const raw = JSON.parse(stored.content) as Record<string, unknown>;
+      if (
+        raw.id !== batchId ||
+        raw.threadId !== threadId ||
+        typeof raw.createdAt !== "number" ||
+        !Number.isFinite(raw.createdAt) ||
+        typeof raw.sent !== "boolean"
+      ) return null;
       const batch = batchSchema.parse(raw.batch);
       const images = Array.isArray(raw.images)
         ? raw.images.flatMap((image) => {
+            const candidate = image as Record<string, unknown>;
             if (
               typeof image === "object" &&
               image !== null &&
-              typeof (image as Record<string, unknown>).annotationId === "string" &&
-              typeof (image as Record<string, unknown>).version === "number" &&
-              typeof (image as Record<string, unknown>).path === "string"
+              typeof candidate.annotationId === "string" &&
+              typeof candidate.version === "number" &&
+              Number.isInteger(candidate.version) &&
+              candidate.version > 0 &&
+              typeof candidate.path === "string" &&
+              isOwnedBatchImagePath(
+                location.storageRootPath,
+                batchId,
+                candidate.path,
+              )
             ) {
-              return [image as { annotationId: string; version: number; path: string }];
+              return [candidate as { annotationId: string; version: number; path: string }];
             }
             return [];
           })
         : [];
-      const createdAt = typeof raw.createdAt === "number" ? raw.createdAt : Date.now();
-      if (createdAt < Date.now() - 24 * 60 * 60_000) return null;
+      const createdAt = raw.createdAt;
+      const sent = raw.sent;
       const previewDataUrls = new Map<string, string>();
       for (const image of images) {
         try {
@@ -364,12 +517,22 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         id: batchId,
         threadId,
         createdAt,
-        sent: raw.sent === true,
+        sent,
         batch,
         images,
         previewDataUrls,
       };
-      pending.set(batchId, item);
+      if (!sent && createdAt < Date.now() - DRAFT_TTL_MS) {
+        try {
+          await removePersistedBatch(item);
+        } catch (error) {
+          bb.log.warn(
+            `Could not remove expired browser annotation batch: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        return null;
+      }
+      if (!sent) pending.set(batchId, item);
       return item;
     } catch {
       return null;
@@ -377,6 +540,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
   }
 
   async function latestPendingBatch(threadId: string): Promise<PendingBatch | null> {
+    await prunePending();
     const cached = [...pending.values()]
       .filter(
         (item) => item.threadId === threadId && !item.sent && item.batch.annotations.length > 0,
@@ -444,12 +608,20 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     if (existing?.sent) return existing;
     if (batch.annotations.length === 0) {
       pending.delete(session.batchId);
-      await clearDraftPointer(session.scope.threadId, session.batchId);
+      if (existing) await removePersistedBatch(existing);
+      else await clearBatchReferences(session.scope.threadId, session.batchId);
       return null;
     }
     const liveIds = new Set(batch.annotations.map((annotation) => annotation.id));
-    for (const id of session.imagePaths.keys()) {
-      if (!liveIds.has(id)) session.imagePaths.delete(id);
+    const retainedImages = existing?.images.filter((image) => !liveIds.has(image.annotationId)) ?? [];
+    const removedImages = existing?.images.filter((image) => liveIds.has(image.annotationId) === false) ?? [];
+    const removedImagePaths = existing
+      ? await removePersistedImages(existing, removedImages, true)
+      : new Set<string>();
+    for (const image of removedImages) {
+      if (removedImagePaths.has(image.path) && session.imagePaths.get(image.annotationId)?.path === image.path) {
+        session.imagePaths.delete(image.annotationId);
+      }
     }
     for (const annotation of batch.annotations) {
       const capture = session.screenshots.get(annotation.id);
@@ -458,7 +630,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         continue;
       }
       try {
-        const path = await storeScreenshot(session.scope.threadId, annotation.id, capture.image);
+        const path = await storeScreenshot(session.scope.threadId, session.batchId, annotation.id, capture.image);
         session.imagePaths.set(annotation.id, { version: capture.version, path });
       } catch (error) {
         bb.log.warn(
@@ -477,12 +649,15 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       previewDataUrls: new Map(),
     };
     item.batch = batch;
-    item.images = batch.annotations.flatMap((annotation) => {
+    item.images = [
+      ...retainedImages.filter((image) => !removedImagePaths.has(image.path)),
+      ...batch.annotations.flatMap((annotation) => {
       const image = session.imagePaths.get(annotation.id);
       return image?.version === annotation.version
         ? [{ annotationId: annotation.id, version: image.version, path: image.path }]
         : [];
-    });
+      }),
+    ];
     const previewDataUrls = new Map(item.previewDataUrls);
     for (const id of previewDataUrls.keys()) {
       if (!liveIds.has(id)) previewDataUrls.delete(id);
@@ -666,7 +841,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     label: "Browser comments",
     async search(context) {
       if (!context.threadId) return [];
-      prunePending();
+      await prunePending();
       await loadPendingBatches(context.threadId);
       return [...pending.values()]
         .filter((item) => item.threadId === context.threadId && !item.sent)
@@ -678,7 +853,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         }));
     },
     async resolve(itemId) {
-      prunePending();
+      await prunePending();
       let item = pending.get(itemId) ?? await loadBatch(itemId);
       if (!item) throw new Error("Browser comments expired or were removed");
       const session = sessions.get(item.threadId);
@@ -847,7 +1022,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     },
 
     async pending({ threadId }) {
-      prunePending();
+      await prunePending();
       await loadPendingBatches(threadId);
       return {
         batches: [...pending.values()]
@@ -1086,17 +1261,21 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       if (!item) return { changed: false };
       if (action === "open") return { changed: false };
       if (action === "delete") {
+        const removesBatch = item.batch.annotations.length === 1 &&
+          item.batch.annotations.some((annotation) => annotation.id === annotationId);
+        if (removesBatch) {
+          await removePersistedBatch(item);
+          pending.delete(item.id);
+          return { changed: true };
+        }
+        const removedImages = item.images.filter((image) => image.annotationId === annotationId);
+        await removePersistedImages(item, removedImages);
         item.batch.annotations = item.batch.annotations.filter(
           (annotation) => annotation.id !== annotationId,
         );
         item.images = item.images.filter((image) => image.annotationId !== annotationId);
         item.previewDataUrls.delete(annotationId);
-        if (item.batch.annotations.length === 0) {
-          pending.delete(item.id);
-          await clearDraftPointer(threadId, item.id);
-        } else {
-          await persistBatch(item);
-        }
+        await persistBatch(item);
       } else {
         return { changed: false };
       }
@@ -1104,7 +1283,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     },
 
     async batch({ threadId, batchId }) {
-      prunePending();
+      await prunePending();
       const item = await loadBatch(batchId, threadId);
       if (!item) return { editable: false, annotations: [] };
       return {
@@ -1121,7 +1300,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     },
 
     async draft({ threadId }) {
-      prunePending();
+      await prunePending();
       const item = await latestPendingBatch(threadId);
       if (!item) return { batchId: null, annotations: [] };
       return {
@@ -1142,8 +1321,8 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       if (session?.batchId === batchId) await stopSession(session);
       const item = pending.get(batchId) ?? await loadBatch(batchId, threadId);
       if (!item || item.sent) return { discarded: false };
+      await removePersistedBatch(item);
       pending.delete(batchId);
-      await clearDraftPointer(threadId, batchId);
       return { discarded: true };
     },
   };

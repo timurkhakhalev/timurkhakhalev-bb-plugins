@@ -14,7 +14,7 @@ The regression suite has two layers:
 - `host.regression.test.ts` bundles the real `src/host.ts` entry only to replace its vendored SDK runtime import in a temporary copy. The injected `PAGE_SCRIPT` and host handlers are otherwise the source under test. A small loopback WebSocket fixture implements the CDP subset used here (`Target.*`, `Page.*`, and `Runtime.evaluate`) and evaluates expressions in a JSDOM realm.
 - `composer.regression.test.ts`, `editor-placement.test.ts` and `shortcut.test.ts` cover pure state transitions and shortcut/layout boundaries.
 
-The suite keeps five explicit `test.failing` cases for confirmed defects:
+The suite keeps three explicit `test.failing` cases for confirmed defects:
 
 | Issue | Regression | Current status |
 | --- | --- | --- |
@@ -22,8 +22,8 @@ The suite keeps five explicit `test.failing` cases for confirmed defects:
 | #3 | 50 large captures stay below the 8 MiB host-RPC boundary and remain queued | Expected failure |
 | #4 | Viewport-sized, oversized, partially offscreen, and narrow-view elements receive a visible editor | Passing |
 | #5 | An active host entry retains its worker until cleanup | Expected failure |
-| #6 | Discard survives plugin restart and old mentions cannot resolve | Expected failure |
-| #7 | Sent history survives the 24-hour draft TTL | Expected failure |
+| #6 | Discard survives restart, cleans owned files, and rejects stale/cross-thread mentions | Passing |
+| #7 | Sent history survives the 24-hour draft TTL while unsent drafts expire | Passing |
 | #8 | Long title, classes/role, custom tags, selector, and metadata remain usable evidence | Passing |
 | #9 | Evidence extraction preserves `Some sample text` while normalizing whitespace | Passing |
 

@@ -173,6 +173,10 @@ export function createServerHarness(
             if (!value) throw new Error(`missing test file: ${input.path}`);
             return { ...value, sizeBytes: value.content.length };
           },
+          remove: async (input: { path: string }) => {
+            files.delete(input.path);
+            return { ok: true };
+          },
         },
       },
       experimental_callHostRpc: async ({ method, input }: { method: string; input: unknown }) => {
@@ -224,7 +228,21 @@ export function createServerHarness(
           };
         }
         if (method === "cleanupSession") return { cleaned: true };
-        if (method === "mutateSession") return { changed: true };
+        if (method === "mutateSession") {
+          const mutation = input as { annotationId?: unknown; action?: unknown };
+          if (mutation.action === "delete" && state.batch && typeof mutation.annotationId === "string") {
+            const annotations = state.batch.annotations.filter(
+              (annotation) => annotation.id !== mutation.annotationId,
+            );
+            if (annotations.length !== state.batch.annotations.length) {
+              state.batch = { ...state.batch, annotations };
+              state.revision += 1;
+              return { changed: true };
+            }
+            return { changed: false };
+          }
+          return { changed: true };
+        }
         if (method === "previewEditor") return { changed: true };
         if (method === "cancelEditor") return { changed: true };
         throw new Error(`unexpected test host method: ${method}`);

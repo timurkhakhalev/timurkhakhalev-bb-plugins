@@ -292,7 +292,7 @@ describe("server browser annotation workflow", () => {
     expect(pending.batches[0].count).toBe(1);
   });
 
-  test.failing("#6 discarded batches stay discarded after a plugin restart", async () => {
+  test("#6 discarded batches stay discarded after a plugin restart", async () => {
     const harness = createServerHarness();
     await startServer(harness);
     await harness.harness.callRpc("live", { threadId: TEST_THREAD_ID, afterRevision: -1 });
@@ -300,9 +300,50 @@ describe("server browser annotation workflow", () => {
       batches: Array<{ id: string }>;
     };
     const batchId = draft.batches[0].id;
+    const batchPath = `${harness.location.storageRootPath}/browser-comments/${batchId}.json`;
+    const imagePath = [...harness.files.keys()].find((path) => path.endsWith(".jpg"));
+    expect(harness.files.has(batchPath)).toBe(true);
+    expect(imagePath).toBeDefined();
+    await expect(
+      harness.harness.callRpc("batch", { threadId: "other-thread", batchId }),
+    ).resolves.toEqual({ editable: false, annotations: [] });
     await expect(
       harness.harness.callRpc("discard", { threadId: TEST_THREAD_ID, batchId }),
     ).resolves.toEqual({ discarded: true });
+    expect(harness.files.has(batchPath)).toBe(false);
+    expect(imagePath && harness.files.has(imagePath)).toBe(false);
+    await expect(
+      harness.harness.callRpc("discard", { threadId: TEST_THREAD_ID, batchId }),
+    ).resolves.toEqual({ discarded: false });
+
+    const reloaded = await harness.harness.lifecycle.reload((bb) => browserAnnotate(bb));
+    await expect(
+      reloaded.harness.registrations.mentionProviders[0].resolve(batchId),
+    ).rejects.toThrow("expired or were removed");
+    await expect(
+      reloaded.harness.callRpc("batch", { threadId: TEST_THREAD_ID, batchId }),
+    ).resolves.toEqual({ editable: false, annotations: [] });
+  });
+
+  test("#6 discard remains idempotent when batch files are already missing", async () => {
+    const harness = createServerHarness();
+    await startServer(harness);
+    await harness.harness.callRpc("live", { threadId: TEST_THREAD_ID, afterRevision: -1 });
+    const draft = await harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID }) as {
+      batches: Array<{ id: string }>;
+    };
+    const batchId = draft.batches[0].id;
+    const batchPath = `${harness.location.storageRootPath}/browser-comments/${batchId}.json`;
+    const imagePath = [...harness.files.keys()].find((path) => path.endsWith(".jpg"));
+    harness.files.delete(batchPath);
+    if (imagePath) harness.files.delete(imagePath);
+
+    await expect(
+      harness.harness.callRpc("discard", { threadId: TEST_THREAD_ID, batchId }),
+    ).resolves.toEqual({ discarded: true });
+    await expect(
+      harness.harness.callRpc("discard", { threadId: TEST_THREAD_ID, batchId }),
+    ).resolves.toEqual({ discarded: false });
 
     const reloaded = await harness.harness.lifecycle.reload((bb) => browserAnnotate(bb));
     await expect(
@@ -310,7 +351,174 @@ describe("server browser annotation workflow", () => {
     ).rejects.toThrow("expired or were removed");
   });
 
-  test.failing("#7 sent annotation history survives the draft TTL", async () => {
+  test("#6 discard removes only screenshots owned by that batch", async () => {
+    const harness = createServerHarness();
+    await startServer(harness, "thread-a", "tab-thread-a");
+    await harness.harness.callRpc("live", { threadId: "thread-a", afterRevision: -1 });
+    const first = await harness.harness.callRpc("pending", { threadId: "thread-a" }) as {
+      batches: Array<{ id: string }>;
+    };
+    const firstId = first.batches[0].id;
+
+    await harness.harness.callRpc("start", { threadId: "thread-b", tabId: "tab-thread-b" });
+    await settleStart(harness, "thread-b");
+    await harness.harness.callRpc("live", { threadId: "thread-b", afterRevision: -1 });
+    const second = await harness.harness.callRpc("pending", { threadId: "thread-b" }) as {
+      batches: Array<{ id: string }>;
+    };
+    const secondId = second.batches[0].id;
+    const imagePaths = [...harness.files.keys()].filter((path) => path.endsWith(".jpg"));
+    expect(imagePaths).toHaveLength(2);
+
+    await expect(
+      harness.harness.callRpc("discard", { threadId: "thread-a", batchId: firstId }),
+    ).resolves.toEqual({ discarded: true });
+    expect(imagePaths.filter((path) => harness.files.has(path))).toHaveLength(1);
+    const remaining = imagePaths.find((path) => harness.files.has(path));
+    expect(remaining).toContain(secondId);
+    await expect(
+      harness.harness.callRpc("batch", { threadId: "thread-b", batchId: secondId }),
+    ).resolves.toMatchObject({ annotations: [{ id: "ann_test" }] });
+  });
+
+  test("#6 a tampered batch cannot remove another batch's screenshot", async () => {
+    const harness = createServerHarness();
+    await startServer(harness, "thread-a", "tab-thread-a");
+    await harness.harness.callRpc("live", { threadId: "thread-a", afterRevision: -1 });
+    const first = await harness.harness.callRpc("pending", { threadId: "thread-a" }) as {
+      batches: Array<{ id: string }>;
+    };
+    const firstId = first.batches[0].id;
+
+    await harness.harness.callRpc("start", { threadId: "thread-b", tabId: "tab-thread-b" });
+    await settleStart(harness, "thread-b");
+    await harness.harness.callRpc("live", { threadId: "thread-b", afterRevision: -1 });
+    const second = await harness.harness.callRpc("pending", { threadId: "thread-b" }) as {
+      batches: Array<{ id: string }>;
+    };
+    const secondId = second.batches[0].id;
+    const firstPath = `${harness.location.storageRootPath}/browser-comments/${firstId}.json`;
+    const secondPath = `${harness.location.storageRootPath}/browser-comments/${secondId}.json`;
+    const secondImagePath = [...harness.files.keys()].find((path) => path.includes(`/${secondId}-`) && path.endsWith(".jpg"));
+    const firstStored = harness.files.get(firstPath);
+    if (!firstStored || !secondImagePath) throw new Error("missing test batch files");
+    const firstRaw = JSON.parse(firstStored.content) as { images: Array<Record<string, unknown>> };
+    firstRaw.images = [{ ...firstRaw.images[0], path: secondImagePath }];
+    firstStored.content = JSON.stringify(firstRaw);
+
+    const reloaded = await harness.harness.lifecycle.reload((bb) => browserAnnotate(bb));
+    await expect(
+      reloaded.harness.callRpc("discard", { threadId: "thread-a", batchId: firstId }),
+    ).resolves.toEqual({ discarded: true });
+    expect(harness.files.has(firstPath)).toBe(false);
+    expect(harness.files.has(secondPath)).toBe(true);
+    expect(harness.files.has(secondImagePath)).toBe(true);
+    await expect(
+      reloaded.harness.callRpc("batch", { threadId: "thread-b", batchId: secondId }),
+    ).resolves.toMatchObject({ annotations: [{ id: "ann_test" }] });
+  });
+
+  test("#6 deleting one annotation removes its screenshot and can be retried", async () => {
+    const harness = createServerHarness({
+      batch: makeBatch({
+        annotations: [
+          makeAnnotation(),
+          makeAnnotation({ id: "ann_two", target: "Secondary" }),
+        ],
+      }),
+      captures: [
+        { annotationId: "ann_test", version: 1, image: makeScreenshot("aW1hZ2UtMQ==") },
+        { annotationId: "ann_two", version: 1, image: makeScreenshot("aW1hZ2UtMg==") },
+      ],
+    });
+    await startServer(harness);
+    await harness.harness.callRpc("live", { threadId: TEST_THREAD_ID, afterRevision: -1 });
+    const draft = await harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID }) as {
+      batches: Array<{ id: string }>;
+    };
+    const batchId = draft.batches[0].id;
+    const firstImagePath = [...harness.files.keys()].find((path) => path.includes(`/${batchId}-ann_test.jpg`));
+    const secondImagePath = [...harness.files.keys()].find((path) => path.includes(`/${batchId}-ann_two.jpg`));
+    expect(firstImagePath).toBeDefined();
+    expect(secondImagePath).toBeDefined();
+    await harness.harness.callRpc("stop", { threadId: TEST_THREAD_ID });
+
+    let failRemove = true;
+    harness.harness.sdk.stub("files.remove", async ({ path }: { path: string }) => {
+      if (failRemove) {
+        failRemove = false;
+        throw new Error("temporary screenshot remove failure");
+      }
+      harness.files.delete(path);
+      return { ok: true };
+    });
+    await expect(
+      harness.harness.callRpc("mutate", {
+        threadId: TEST_THREAD_ID,
+        annotationId: "ann_test",
+        action: "delete",
+      }),
+    ).rejects.toThrow("temporary screenshot remove failure");
+    await expect(
+      harness.harness.callRpc("batch", { threadId: TEST_THREAD_ID, batchId }),
+    ).resolves.toMatchObject({ annotations: [{ id: "ann_test" }, { id: "ann_two" }] });
+
+    await expect(
+      harness.harness.callRpc("mutate", {
+        threadId: TEST_THREAD_ID,
+        annotationId: "ann_test",
+        action: "delete",
+      }),
+    ).resolves.toEqual({ changed: true });
+    expect(firstImagePath && harness.files.has(firstImagePath)).toBe(false);
+    expect(secondImagePath && harness.files.has(secondImagePath)).toBe(true);
+    await expect(
+      harness.harness.callRpc("batch", { threadId: TEST_THREAD_ID, batchId }),
+    ).resolves.toMatchObject({ annotations: [{ id: "ann_two" }] });
+  });
+
+  test("#6 active deletion removes its screenshot while preserving the remaining annotation", async () => {
+    const harness = createServerHarness({
+      batch: makeBatch({
+        annotations: [
+          makeAnnotation(),
+          makeAnnotation({ id: "ann_two", target: "Secondary" }),
+        ],
+      }),
+      captures: [
+        { annotationId: "ann_test", version: 1, image: makeScreenshot("aW1hZ2UtMQ==") },
+        { annotationId: "ann_two", version: 1, image: makeScreenshot("aW1hZ2UtMg==") },
+      ],
+    });
+    await startServer(harness);
+    await harness.harness.callRpc("live", { threadId: TEST_THREAD_ID, afterRevision: -1 });
+    const draft = await harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID }) as {
+      batches: Array<{ id: string; count: number }>;
+    };
+    const batchId = draft.batches[0].id;
+    const firstImagePath = [...harness.files.keys()].find((path) => path.includes(`/${batchId}-ann_test.jpg`));
+    const secondImagePath = [...harness.files.keys()].find((path) => path.includes(`/${batchId}-ann_two.jpg`));
+    expect(firstImagePath).toBeDefined();
+    expect(secondImagePath).toBeDefined();
+
+    await expect(
+      harness.harness.callRpc("mutate", {
+        threadId: TEST_THREAD_ID,
+        annotationId: "ann_test",
+        action: "delete",
+      }),
+    ).resolves.toEqual({ changed: true });
+    expect(firstImagePath && harness.files.has(firstImagePath)).toBe(false);
+    expect(secondImagePath && harness.files.has(secondImagePath)).toBe(true);
+    await expect(
+      harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID }),
+    ).resolves.toMatchObject({ batches: [{ id: batchId, count: 1 }] });
+    await expect(
+      harness.harness.callRpc("batch", { threadId: TEST_THREAD_ID, batchId }),
+    ).resolves.toMatchObject({ annotations: [{ id: "ann_two" }] });
+  });
+
+  test("#7 sent annotation history survives the draft TTL", async () => {
     const harness = createServerHarness();
     await startServer(harness);
     await harness.harness.callRpc("live", { threadId: TEST_THREAD_ID, afterRevision: -1 });
@@ -319,6 +527,12 @@ describe("server browser annotation workflow", () => {
     };
     const batchId = draft.batches[0].id;
     await harness.harness.callRpc("send", { threadId: TEST_THREAD_ID });
+    await expect(
+      harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID }),
+    ).resolves.toEqual({ batches: [] });
+    await expect(
+      harness.harness.callRpc("draft", { threadId: TEST_THREAD_ID }),
+    ).resolves.toEqual({ batchId: null, annotations: [] });
     const path = `${harness.location.storageRootPath}/browser-comments/${batchId}.json`;
     const stored = harness.files.get(path);
     if (!stored) throw new Error("sent batch was not persisted by the test setup");
@@ -335,6 +549,49 @@ describe("server browser annotation workflow", () => {
     }
     expect(error).toBeUndefined();
     expect(resolved?.context).toContain("# Browser comments:");
+    const pending = await reloaded.harness.callRpc("pending", { threadId: TEST_THREAD_ID });
+    expect(pending).toEqual({ batches: [] });
+  });
+
+  test("#7 draft expiry removes unsent storage without removing same-age sent history", async () => {
+    const harness = createServerHarness();
+    await startServer(harness, "thread-draft", "tab-thread-a");
+    await harness.harness.callRpc("live", { threadId: "thread-draft", afterRevision: -1 });
+    const draft = await harness.harness.callRpc("pending", { threadId: "thread-draft" }) as {
+      batches: Array<{ id: string }>;
+    };
+    const draftId = draft.batches[0].id;
+
+    await harness.harness.callRpc("start", { threadId: "thread-sent", tabId: "tab-thread-b" });
+    await settleStart(harness, "thread-sent");
+    await harness.harness.callRpc("live", { threadId: "thread-sent", afterRevision: -1 });
+    const sentDraft = await harness.harness.callRpc("pending", { threadId: "thread-sent" }) as {
+      batches: Array<{ id: string }>;
+    };
+    const sentId = sentDraft.batches[0].id;
+    await harness.harness.callRpc("send", { threadId: "thread-sent" });
+
+    const expiredAt = Date.now() - 25 * 60 * 60_000;
+    for (const id of [draftId, sentId]) {
+      const path = `${harness.location.storageRootPath}/browser-comments/${id}.json`;
+      const stored = harness.files.get(path);
+      if (!stored) throw new Error(`missing persisted batch ${id}`);
+      const raw = JSON.parse(stored.content) as Record<string, unknown>;
+      stored.content = JSON.stringify({ ...raw, createdAt: expiredAt });
+    }
+
+    const reloaded = await harness.harness.lifecycle.reload((bb) => browserAnnotate(bb));
+    await expect(
+      reloaded.harness.callRpc("pending", { threadId: "thread-draft" }),
+    ).resolves.toEqual({ batches: [] });
+    const draftPath = `${harness.location.storageRootPath}/browser-comments/${draftId}.json`;
+    expect(harness.files.has(draftPath)).toBe(false);
+
+    await expect(
+      reloaded.harness.callRpc("pending", { threadId: "thread-sent" }),
+    ).resolves.toEqual({ batches: [] });
+    const resolved = await reloaded.harness.registrations.mentionProviders[0].resolve(sentId);
+    expect(resolved.context).toContain("# Browser comments:");
   });
 
   test("the RPC boundary rejects an annotation image with a stale version", async () => {
