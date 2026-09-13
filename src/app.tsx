@@ -781,7 +781,10 @@ function SentAnnotationsHover() {
       if (!threadId || !editable) return;
       try {
         const result = await rpc.call("mutate", { threadId, annotationId, action: "open" });
-        if (!result.changed) return;
+        if (!result.changed) {
+          toast.error("This annotation target is no longer available on the page");
+          return;
+        }
         setAnchor(null);
         setBatchId(null);
         setEditable(false);

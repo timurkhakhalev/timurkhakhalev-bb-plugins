@@ -137,9 +137,13 @@ const PAGE_SCRIPT = `
     );
     return nodes.length === 1 && !childHasText ? nodes[0] : null;
   };
-  const textValueFor = (element) => {
+  const fullTextValueFor = (element) => {
     const node = directTextNode(element);
-    return node ? (node.nodeValue || "").trim().slice(0, 4000) : null;
+    return node ? node.nodeValue || "" : null;
+  };
+  const textValueFor = (element) => {
+    const value = fullTextValueFor(element);
+    return value === null ? null : value.trim().slice(0, 4000);
   };
   const setDirectText = (element, value) => {
     const node = directTextNode(element);
@@ -162,7 +166,14 @@ const PAGE_SCRIPT = `
   const restoreDesignText = (item) => {
     if (!item || !item.designChange || !item.designChange.text) return;
     const element = resolveElement(item);
-    if (element) setDirectText(element, item.designChange.text.previousValue);
+    if (element) {
+      setDirectText(
+        element,
+        typeof item.rollbackText === "string"
+          ? item.rollbackText
+          : item.designChange.text.previousValue,
+      );
+    }
   };
   const renderDesignPreview = () => {
     if (!designStyle.isConnected) return;
@@ -223,6 +234,9 @@ const PAGE_SCRIPT = `
       id,
       element,
       selector: annotation ? annotation.selector : selectorFor(element),
+      rollbackText: annotation && typeof annotation.rollbackText === "string"
+        ? annotation.rollbackText
+        : fullTextValueFor(element),
       designChange: {
         text,
         declarations: properties.map((property) => {
@@ -504,6 +518,7 @@ const PAGE_SCRIPT = `
     if (!item) return false;
     item.comment = trustedComment;
     item.designChange = designChange || null;
+    item.rollbackText = formDraft.rollbackText;
     const rect = formTarget.getBoundingClientRect();
     item.snapshotRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     item.nodePosition = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -659,6 +674,7 @@ const PAGE_SCRIPT = `
         ...annotation,
         seq: index + 1,
         element,
+        rollbackText: element ? fullTextValueFor(element) : null,
         snapshotRect: rect,
         clientX: rect.x + Math.min(18, Math.max(8, rect.width / 2)),
         clientY: rect.y,
