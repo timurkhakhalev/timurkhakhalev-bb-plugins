@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { placeEditor } from "./editor-placement.js";
+import { defaultShortcut, matchesShortcut } from "./shortcut.js";
+import * as Dialog from "@radix-ui/react-dialog";
 import {
   definePluginApp,
   useComposer,
@@ -10,7 +13,6 @@ import {
   type ComposerView,
   type ExperimentalPluginBrowserToolbarActionProps,
 } from "@get-bb/plugin-sdk/app";
-import { toast } from "sonner";
 import type { DesignChange, EditorDraft, rpcContract } from "./contracts.js";
 import { planMentionReconciliation, removeStructuredMentionText } from "./composer.js";
 
@@ -33,6 +35,11 @@ type LiveAnnotation = {
 };
 
 const composerDrafts = new Map<string, ComposerStructuredDraft>();
+
+type DesktopBrowserVisibility = {
+  setVisible(input: { tabId: string; visible: boolean }): void;
+  setVisibleWithoutFocus(input: { tabId: string; visible: boolean }): void;
+};
 const composerDraftReady = new Set<string>();
 
 const annotateIcon = (
@@ -158,9 +165,8 @@ function DesignEditor({
   });
 
   return (
-    <div className="max-h-[min(20rem,48vh)] overflow-y-auto px-3 pb-2">
-      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-popover py-2">
-        <span className="text-xs font-medium text-muted-foreground">Element styles</span>
+    <div className="min-h-0 overflow-y-auto px-3 pb-2" style={{ maxHeight: 240 }}>
+      {changedDesign(design) ? <div className="flex justify-end">
         <button
           type="button"
           className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground"
@@ -168,7 +174,7 @@ function DesignEditor({
         >
           Reset all
         </button>
-      </div>
+      </div> : null}
       {designGroups.map((group) => {
         const properties = group.properties.filter((property) =>
           property === "text" ? Boolean(design.text) : declarationMap.has(property),
@@ -176,7 +182,7 @@ function DesignEditor({
         if (properties.length === 0) return null;
         return (
           <section key={group.title} className="border-b border-border py-2 last:border-b-0">
-            <h3 className="mb-1 text-[11px] font-medium text-muted-foreground">{group.title}</h3>
+            {group.title !== "Content" ? <h3 className="mb-1 text-[11px] font-medium text-muted-foreground">{group.title}</h3> : null}
             <div className="space-y-1">
               {properties.map((property) => {
                 const value = property === "text"
@@ -190,7 +196,7 @@ function DesignEditor({
                 return (
                   <label
                     key={property}
-                    className="grid min-h-8 grid-cols-[7.25rem_minmax(0,1fr)] items-center gap-2 text-xs"
+                    className="grid min-h-8 grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] items-center gap-2 text-xs"
                   >
                     <span className="truncate text-muted-foreground">{designLabels[property]}</span>
                     {colorProperties.has(property) ? (
@@ -199,19 +205,19 @@ function DesignEditor({
                           type="color"
                           value={rgbToHex(value)}
                           aria-label={`${designLabels[property]} picker`}
-                          className="h-7 w-8 cursor-pointer rounded-md border border-border bg-muted p-1"
+                          className="h-7 w-8 cursor-pointer rounded-md border border-border bg-transparent p-1"
                           onChange={(event) => setValue(event.target.value)}
                         />
                         <input
                           value={value}
-                          className="h-7 min-w-0 rounded-md border border-border bg-muted px-2 text-foreground outline-none focus:border-ring"
+                          className="h-7 min-w-0 rounded-md border border-border bg-transparent px-2 text-foreground outline-none focus:border-ring"
                           onChange={(event) => setValue(event.target.value)}
                         />
                       </span>
                     ) : options ? (
                       <select
                         value={value}
-                        className="h-7 min-w-0 rounded-md border border-border bg-muted px-2 text-foreground outline-none focus:border-ring"
+                        className="h-7 min-w-0 rounded-md border border-border bg-transparent px-2 text-foreground outline-none focus:border-ring"
                         onChange={(event) => setValue(event.target.value)}
                       >
                         {!options.includes(value) ? <option value={value}>{value}</option> : null}
@@ -224,7 +230,7 @@ function DesignEditor({
                         max={property === "opacity" ? 1 : undefined}
                         step={property === "opacity" ? 0.05 : pixelProperties.has(property) ? 1 : undefined}
                         value={property === "opacity" || pixelProperties.has(property) ? numericValue(value) : value}
-                        className="h-7 min-w-0 rounded-md border border-border bg-muted px-2 text-foreground outline-none focus:border-ring"
+                        className="h-7 min-w-0 rounded-md border border-border bg-transparent px-2 text-foreground outline-none focus:border-ring"
                         onChange={(event) => {
                           const next = event.target.value;
                           setValue(pixelProperties.has(property) ? `${next || "0"}px` : next);
@@ -242,7 +248,62 @@ function DesignEditor({
   );
 }
 
+function findBrowserNavigation(element: Element | null): Element | null {
+  while (element) {
+    const navigation = element.closest('[aria-label="Browser navigation"]');
+    if (navigation) return navigation;
+    const root = element.getRootNode();
+    element = root instanceof ShadowRoot ? root.host : null;
+  }
+  return null;
+}
+
+function useAnnotationShortcut() {
+  const rpc = useRpc<typeof rpcContract>();
+  const [shortcut, setShortcut] = useState(defaultShortcut);
+  const refresh = useCallback(() => { void rpc.call("getShortcut", {}).then((value) => setShortcut(value.shortcut)); }, [rpc]);
+  useEffect(refresh, [refresh]);
+  useRealtime("shortcut-changed", refresh);
+  return shortcut;
+}
+
+function ShortcutSettings() {
+  const shortcut = useAnnotationShortcut();
+  const rpc = useRpc<typeof rpcContract>();
+  const [recording, setRecording] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const save = async (value: string) => {
+    setRecording(false);
+    setSaving(true);
+    setError("");
+    try { await rpc.call("setShortcut", { shortcut: value }); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save shortcut"); }
+    finally { setSaving(false); }
+  };
+  return <div className="flex flex-wrap items-center justify-between gap-3">
+    <div><p className="text-sm font-medium">Annotation mode shortcut</p><p className="text-xs text-muted-foreground">Click to record. Press a modifier + letter. Escape cancels.</p>{error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}</div>
+    <div className="flex items-center gap-2">
+      <button type="button" disabled={saving} aria-pressed={recording} onBlur={() => setRecording(false)} onClick={() => { setError(""); setRecording(true); }}
+        onKeyDown={(event) => {
+          if (!recording) return;
+          event.preventDefault(); event.stopPropagation();
+          if (event.key === "Escape") { setRecording(false); return; }
+          if (event.repeat || event.nativeEvent.isComposing || !/^(Key[A-Z]|Period)$/.test(event.code)) return;
+          const modifiers = [event.metaKey && "Meta", event.ctrlKey && "Ctrl", event.altKey && "Alt", event.shiftKey && "Shift"].filter(Boolean);
+          if (!modifiers.length) { setError("Include Cmd, Ctrl, Alt or Shift."); return; }
+          void save([...modifiers, event.code === "Period" ? "." : event.code.slice(3)].join("+"));
+        }}
+        className="min-w-40 rounded-md border border-border px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">{recording ? "Press shortcut…" : saving ? "Saving…" : shortcut || "Set shortcut"}</button>
+      <button type="button" disabled={saving || !shortcut} onClick={() => void save("")} className="px-2 py-2 text-xs text-muted-foreground">Disable</button>
+    </div>
+  </div>;
+}
+
 function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToolbarActionProps) {
+  const shortcut = useAnnotationShortcut();
+  const commentRef = useRef<HTMLTextAreaElement | null>(null);
+  const [previewReadyId, setPreviewReadyId] = useState<string | null>(null);
   const rpc = useRpc<typeof rpcContract>();
   const connectionState = useRealtimeConnectionState();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -252,14 +313,22 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
   const pollErrorRef = useRef(false);
   const previewErrorRef = useRef(false);
   const [busy, setBusy] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const showSessionError = (error: unknown, fallback: string) => setErrorMessage(error instanceof Error ? error.message : typeof error === "string" ? error : fallback);
   const [active, setActive] = useState(false);
   const [editor, setEditor] = useState<EditorDraft | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const editorViewportRef = useRef<DOMRect | null>(null);
+  const [editorStyle, setEditorStyle] = useState<React.CSSProperties>({ visibility: "hidden" });
   const [comment, setComment] = useState("");
   const [design, setDesign] = useState<DesignChange | null>(null);
   const [annotationCount, setAnnotationCount] = useState(0);
   const [capturePending, setCapturePending] = useState(false);
   const [captureFailed, setCaptureFailed] = useState(false);
-  const [overlayStyle, setOverlayStyle] = useState<React.CSSProperties>({ top: 52, right: 12 });
+  const [toolbarContainer, setToolbarContainer] = useState<HTMLDivElement | null>(null);
+  const [pageStyle, setPageStyle] = useState<React.CSSProperties>({});
+  const [selectionStyle, setSelectionStyle] = useState<React.CSSProperties>({});
 
   const refreshStatus = useCallback(() => {
     void rpc
@@ -268,20 +337,66 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       .catch(() => undefined);
   }, [rpc, tabId, threadId]);
 
+  useLayoutEffect(() => {
+    if (!editor) return;
+    // Electron's native browser view sits above DOM portals. The editor uses a
+    // page snapshot while the native view is hidden, then restores it on close.
+    const browser = (window as typeof window & {
+      bbDesktop?: { browser?: DesktopBrowserVisibility };
+    }).bbDesktop?.browser;
+    if (!browser) return;
+    const navigation = findBrowserNavigation(buttonRef.current);
+    const viewport = navigation?.parentElement?.lastElementChild;
+    if (viewport) {
+      const rect = viewport.getBoundingClientRect();
+      editorViewportRef.current = rect;
+      setPageStyle({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    }
+    if (previewReadyId !== editor.id) return;
+    browser.setVisible({ tabId, visible: false });
+    return () => {
+      if (buttonRef.current?.getBoundingClientRect().width) {
+        browser.setVisibleWithoutFocus({ tabId, visible: true });
+      }
+    };
+  }, [editor?.id, previewReadyId, tabId]);
+
   useEffect(refreshStatus, [connectionState, refreshStatus]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (!editor) return;
     const position = () => {
-      const rect = buttonRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      setOverlayStyle({
-        top: rect.bottom + 8,
-        right: Math.max(12, window.innerWidth - rect.right),
-      });
+      const navigation = findBrowserNavigation(buttonRef.current);
+      const viewport = navigation?.parentElement?.lastElementChild;
+      const popup = editorRef.current;
+      if (!viewport || !popup) return;
+      const liveBounds = viewport.getBoundingClientRect();
+      const bounds = liveBounds.height > 0 ? liveBounds : editorViewportRef.current;
+      if (!bounds) return;
+      const placement = placeEditor(bounds, editor.viewport, editor.rect, expanded);
+      setEditorStyle(placement.popup);
+      setSelectionStyle(placement.target);
+      setPageStyle({ left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height });
     };
-    position();
+    const frame = requestAnimationFrame(() => {
+      position();
+    });
     window.addEventListener("resize", position);
-    return () => window.removeEventListener("resize", position);
+    return () => { cancelAnimationFrame(frame); window.removeEventListener("resize", position); };
+  }, [editor?.id, expanded, previewReadyId]);
+
+
+  useLayoutEffect(() => {
+    if (!active) return;
+    const navigation = findBrowserNavigation(buttonRef.current);
+    const viewport = navigation?.parentElement?.lastElementChild;
+    if (!viewport) return;
+    // Reserve layout space: a DOM overlay cannot paint over Electron's native view.
+    const container = document.createElement("div");
+    container.style.cssText = "flex:none;position:relative;min-width:0";
+    viewport.before(container);
+    setToolbarContainer(container);
+    return () => { container.remove(); setToolbarContainer(null); };
   }, [active]);
 
   useEffect(() => {
@@ -306,17 +421,24 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
         if (live.editor?.id !== editorIdRef.current) {
           editorIdRef.current = live.editor?.id ?? null;
           setEditor(live.editor);
+          setExpanded(false);
           setComment(live.editor?.comment ?? "");
           setDesign(live.editor?.designChange ?? null);
           previewRevisionRef.current = 0;
           previewErrorRef.current = false;
+        } else if (live.editor) {
+          const previewDataUrl = live.editor.previewDataUrl;
+          setEditor((current) => current && current.previewDataUrl !== previewDataUrl
+            ? { ...current, previewDataUrl }
+            : current);
         }
         if (!live.active) setActive(false);
         pollErrorRef.current = false;
       } catch (error) {
         if (!disposed && !pollErrorRef.current) {
           pollErrorRef.current = true;
-          toast.error(error instanceof Error ? error.message : "Could not read annotation state");
+          setActive(false);
+          showSessionError(error, "Could not read annotation state");
         }
       } finally {
         running = false;
@@ -344,7 +466,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       }).catch((error) => {
         if (!previewErrorRef.current) {
           previewErrorRef.current = true;
-          toast.error(error instanceof Error ? error.message : "Could not preview design changes");
+          setErrorMessage(error instanceof Error ? error.message : "Could not preview design changes");
         }
       });
     }, 80);
@@ -358,12 +480,8 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
         const payload = rawPayload as SessionEvent;
         if (payload.threadId !== threadId || payload.tabId !== tabId) return;
         setActive(false);
-        if (payload.status === "sent") {
-          toast.success(
-            `${payload.count ?? 0} browser annotation${payload.count === 1 ? "" : "s"} sent`,
-          );
-        } else if (payload.status === "error") {
-          toast.error(payload.error || "Browser annotation failed");
+        if (payload.status === "error") {
+          showSessionError(payload.error, "Browser annotation failed");
         }
       },
       [tabId, threadId],
@@ -377,12 +495,12 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
         await rpc.call("stop", { threadId });
         setActive(false);
       } else {
+        setErrorMessage(null);
         await rpc.call("start", { threadId, tabId });
         setActive(true);
-        toast.message("Select page elements and add comments");
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error));
+      setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
@@ -390,6 +508,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
 
   const saveEditor = useCallback(async () => {
     if (!editor || !design) return;
+    setErrorMessage(null);
     setBusy(true);
     try {
       const result = await rpc.call("save", {
@@ -402,7 +521,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       editorIdRef.current = null;
       setEditor(null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not save annotation");
+      setErrorMessage(error instanceof Error ? error.message : "Could not save annotation");
     } finally {
       setBusy(false);
     }
@@ -415,7 +534,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       editorIdRef.current = null;
       setEditor(null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not close annotation editor");
+      setErrorMessage(error instanceof Error ? error.message : "Could not close annotation editor");
     }
   }, [editor, rpc, threadId]);
 
@@ -432,7 +551,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       editorIdRef.current = null;
       setEditor(null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not delete annotation");
+      setErrorMessage(error instanceof Error ? error.message : "Could not delete annotation");
     } finally {
       setBusy(false);
     }
@@ -444,13 +563,26 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       const result = await rpc.call("send", { threadId });
       if (!result.sent) throw new Error("Finish the current annotation before sending");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not send annotations");
+      setErrorMessage(error instanceof Error ? error.message : "Could not send annotations");
     } finally {
       setBusy(false);
     }
   }, [rpc, threadId]);
 
   const designChanged = design ? changedDesign(design) : null;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || event.isComposing || busy) return;
+      const button = buttonRef.current;
+      if (!button || !button.checkVisibility() || !button.getBoundingClientRect().width) return;
+      if (!matchesShortcut(event, shortcut, /Mac/.test(navigator.platform))) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void toggle();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [shortcut, busy, editor, toggle]);
   const canSave = Boolean(editor && (comment.trim().length > 0 || designChanged));
 
   return (
@@ -468,13 +600,21 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
         {annotateIcon}
         <span className="hidden xl:inline">{active ? "Annotating" : "Annotate"}</span>
       </button>
-      {active ? createPortal(
-        <div className="fixed z-[1200] flex w-[min(24rem,calc(100vw-24px))] flex-col items-end gap-2" style={overlayStyle}>
-          <div className="flex items-center gap-3 rounded-full bg-popover py-1.5 pl-4 pr-1.5 text-popover-foreground shadow-xl ring-1 ring-border">
-            <span className="text-sm font-semibold">Annotate Page</span>
+      {errorMessage && !editor ? <span role="status" className="max-w-48 text-xs text-destructive">{errorMessage}</span> : null}
+      {editor?.previewDataUrl ? createPortal(
+        <>
+          <img key={editor.id} src={editor.previewDataUrl} alt="" onLoad={() => setPreviewReadyId(editor.id)} style={{ position: "fixed", zIndex: 1199, pointerEvents: "none", ...pageStyle }} />
+          <div aria-hidden style={{ position: "fixed", zIndex: 1200, pointerEvents: "none", outline: "2px solid #3385ff", ...selectionStyle }} />
+        </>,
+        document.body,
+      ) : null}
+      {active && toolbarContainer ? createPortal(
+        <div data-bb-plugin-root="" data-bb-plugin="browser-annotate" className="flex justify-center border-b border-border bg-background px-3 py-1">
+          <div className="flex h-9 items-center gap-3 text-foreground">
+            <span className="text-sm font-semibold tracking-[-0.01em]">Annotate Page</span>
             <button
               type="button"
-              className="h-8 rounded-full bg-primary px-4 text-sm font-semibold text-primary-foreground hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+              className="h-8 min-w-[4.5rem] rounded-lg bg-blue-500 px-3.5 text-sm font-semibold text-white transition-colors hover:bg-blue-400 active:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/35"
               disabled={busy || Boolean(editor) || annotationCount === 0 || capturePending}
               title={captureFailed ? "Screenshot failed; retrying automatically" : undefined}
               onClick={() => void send()}
@@ -482,37 +622,60 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
               Send
             </button>
           </div>
-          {editor && design ? (
-            <div
-              role="dialog"
+          {editor && design && previewReadyId === editor.id ? (
+            <Dialog.Root open onOpenChange={(open) => { if (!open) void cancelEditor(); }}>
+            <Dialog.Portal>
+            <Dialog.Content
+              ref={editorRef}
+              data-bb-plugin-root=""
+              data-bb-plugin="browser-annotate"
               aria-label={`Annotate ${editor.target}`}
-              className="w-full overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl"
+              aria-describedby={undefined}
+              onOpenAutoFocus={(event) => {
+                event.preventDefault();
+                const input = commentRef.current;
+                // Portal mount is the focus boundary, not the parent render.
+                // Let placement commit before moving keyboard focus out of WebContents.
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                  if (!input?.isConnected) return;
+                  window.focus();
+                  input.focus({ preventScroll: true });
+                }));
+              }}
+              style={editorStyle}
+              className={`fixed z-[1201] flex flex-col overflow-hidden border border-border bg-popover text-popover-foreground shadow-2xl ${expanded ? "rounded-xl" : "rounded-full"}`}
             >
-              <div className="border-b border-border px-3 py-2">
-                <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                  <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5">{editor.tag}</span>
-                  <span className="truncate">{editor.target}</span>
-                </div>
+              <Dialog.Title className="sr-only">Annotate {editor.target}</Dialog.Title>
+              <div className={`flex shrink-0 items-center gap-2 px-2 py-1.5 ${expanded ? "border-b border-border" : ""}`}>
+                <button type="button" aria-label={expanded ? "Hide element settings" : "Show element settings"} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)} className="flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-state-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
+                  <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="size-4"><path d="M3 6h8m4 0h6M3 12h3m4 0h11M3 18h11m4 0h3"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg>
+                </button>
                 <textarea
-                  autoFocus
+                  ref={commentRef}
                   value={comment}
                   maxLength={4000}
-                  rows={2}
-                  placeholder="Add a comment…"
+                  rows={1}
+                  placeholder={expanded ? "Describe these changes…" : "Add a comment…"}
                   aria-label="Annotation comment"
-                  className="mt-2 max-h-24 min-h-12 w-full resize-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                  style={{ height: 32, minHeight: 32, maxHeight: 32, margin: 0, padding: "6px 0", lineHeight: "20px", border: 0, boxSizing: "border-box" }}
+                  className="min-w-0 flex-1 resize-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
                   onChange={(event) => setComment(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Escape") void cancelEditor();
-                    if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canSave) {
+                    if (!event.shiftKey && !event.nativeEvent.isComposing && event.key === "Enter" && canSave) {
                       event.preventDefault();
                       void saveEditor();
                     }
                   }}
                 />
+                {!expanded && canSave ? <button type="button" disabled={busy} onClick={() => void saveEditor()} className="h-8 shrink-0 rounded-full px-2 text-xs text-foreground hover:bg-state-hover">Save</button> : null}
               </div>
-              <DesignEditor design={design} onChange={setDesign} />
-              <div className="flex items-center justify-end gap-2 border-t border-border bg-popover px-3 py-2">
+              {expanded ? <>
+                <div className="shrink-0 border-b border-border px-3 py-2 text-xs text-muted-foreground">&lt;{editor.tag}&gt;</div>
+                <DesignEditor design={design} onChange={setDesign} />
+              </> : null}
+              {errorMessage ? <p role="status" className="px-3 py-1 text-xs text-destructive">{errorMessage}</p> : null}
+              {expanded ? <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border bg-popover px-3 py-2">
                 {editor.annotationId ? (
                   <button
                     type="button"
@@ -539,11 +702,13 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
                 >
                   Save
                 </button>
-              </div>
-            </div>
+              </div> : null}
+            </Dialog.Content>
+            </Dialog.Portal>
+            </Dialog.Root>
           ) : null}
         </div>,
-        document.body,
+        toolbarContainer,
       ) : null}
     </>
   );
@@ -560,6 +725,7 @@ function browserMentions(threadId: string) {
 }
 
 function useBrowserAnnotationsComposerSync() {
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
   const connectionState = useRealtimeConnectionState();
@@ -630,7 +796,7 @@ function useBrowserAnnotationsComposerSync() {
       } catch (error) {
         if (!pollErrorRef.current) {
           pollErrorRef.current = true;
-          toast.error(error instanceof Error ? error.message : "Could not sync browser annotations");
+          setErrorMessage(error instanceof Error ? error.message : "Could not sync browser annotations");
         }
       } finally {
         running = false;
@@ -655,6 +821,7 @@ function useBrowserAnnotationsComposerSync() {
       [detach, threadId],
     ),
   );
+  return errorMessage;
 }
 
 function DesignChangeDetails({ designChange }: { designChange: DesignChange | null }) {
@@ -685,7 +852,8 @@ function DesignChangeDetails({ designChange }: { designChange: DesignChange | nu
 }
 
 function SentAnnotationsHover() {
-  useBrowserAnnotationsComposerSync();
+  const syncError = useBrowserAnnotationsComposerSync();
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
   const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
@@ -757,7 +925,7 @@ function SentAnnotationsHover() {
         }
       }).catch((error) => {
         if (request === requestRef.current) {
-          toast.error(error instanceof Error ? error.message : "Could not load annotations");
+          setErrorMessage(error instanceof Error ? error.message : "Could not load annotations");
         }
       });
     };
@@ -782,7 +950,7 @@ function SentAnnotationsHover() {
       try {
         const result = await rpc.call("mutate", { threadId, annotationId, action: "open" });
         if (!result.changed) {
-          toast.error("This annotation target is no longer available on the page");
+          setErrorMessage("This annotation target is no longer available on the page");
           return;
         }
         setAnchor(null);
@@ -790,7 +958,7 @@ function SentAnnotationsHover() {
         setEditable(false);
         setAnnotations([]);
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Could not open annotation");
+        setErrorMessage(error instanceof Error ? error.message : "Could not open annotation");
       }
     },
     [editable, rpc, threadId],
@@ -810,21 +978,26 @@ function SentAnnotationsHover() {
           setEditable(false);
         }
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Could not delete annotation");
+        setErrorMessage(error instanceof Error ? error.message : "Could not delete annotation");
       }
     },
     [annotations, batchId, editable, rpc, threadId],
   );
 
-  if (!anchor || annotations.length === 0) return null;
+  if (!anchor) return syncError ? <span role="status" className="text-xs text-destructive">{syncError}</span> : null;
+  if (annotations.length === 0 && !errorMessage) return null;
   return createPortal(
     <div
       data-browser-annotations-popover=""
+      data-bb-plugin-root=""
+      data-bb-plugin="browser-annotate"
+      data-bb-portaled-overlay=""
       className="fixed z-[1100] max-h-[min(28rem,70vh)] max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-2xl"
       style={popupStyle}
       onMouseEnter={cancelClose}
       onMouseLeave={closeSoon}
     >
+      {errorMessage ? <p role="status" className="p-2 text-xs text-destructive">{errorMessage}</p> : null}
       {annotations.map((annotation, index) => (
         <div key={annotation.id} className="border-b border-border p-2 last:border-b-0">
           <div className="flex items-start gap-2">
@@ -882,6 +1055,7 @@ function SentAnnotationsHover() {
 }
 
 export default definePluginApp((app) => {
+  app.slots.settingsSection({ id: "annotation-shortcut", title: "Keyboard shortcut", component: ShortcutSettings });
   app.composer.customize({
     id: "browser-annotations-draft",
     scopes: ["thread"],

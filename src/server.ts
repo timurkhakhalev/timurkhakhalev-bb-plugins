@@ -21,9 +21,11 @@ export type PendingBatch = {
 
 type ActiveSession = {
   controller: AbortController;
+  operationTail: Promise<void>;
   tabId: string;
   hostId: string;
   scope: BrowserScope;
+  leaseId: string | null;
   wsEndpoint: string | null;
   batchId: string;
   screenshots: Map<string, { version: number; image: Screenshot }>;
@@ -136,6 +138,24 @@ export default function browserAnnotate(bb: BbPluginApi): void {
   const sessions = new Map<string, ActiveSession>();
   const pending = new Map<string, PendingBatch>();
 
+  async function runSessionOperation<T>(
+    session: ActiveSession,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = session.operationTail;
+    let release!: () => void;
+    session.operationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => undefined);
+    try {
+      session.controller.signal.throwIfAborted();
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
   const prunePending = () => {
     const cutoff = Date.now() - 24 * 60 * 60_000;
     for (const [id, item] of pending) {
@@ -176,12 +196,11 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     throw new Error("This Browser tab is no longer available");
   }
 
-  async function withLease<T>(
+  async function acquireSessionLease(
     scope: BrowserScope,
     tabId: string,
     signal: AbortSignal,
-    action: (wsEndpoint: string) => Promise<T>,
-  ): Promise<T> {
+  ): Promise<string> {
     signal.throwIfAborted();
     const desktop = bb.sdk.experimental_desktopBrowsers;
     const lease = await desktop.acquireControl({
@@ -191,16 +210,39 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       ttlMs: 30 * 60_000,
       allowPersonal: true,
     });
-    try {
-      signal.throwIfAborted();
-      const connection = await desktop.openConnection({
-        ...scope,
-        leaseId: lease.leaseId,
-      });
-      return await action(connection.wsEndpoint);
-    } finally {
+    if (signal.aborted) {
       await desktop.releaseControl({ ...scope, leaseId: lease.leaseId }).catch(() => undefined);
+      signal.throwIfAborted();
     }
+    return lease.leaseId;
+  }
+
+  async function withSessionConnection<T>(
+    session: ActiveSession,
+    action: (wsEndpoint: string) => Promise<T>,
+  ): Promise<T> {
+    session.controller.signal.throwIfAborted();
+    if (!session.leaseId) throw new Error("Browser annotation session is not ready");
+    if (!session.wsEndpoint) {
+      const connection = await bb.sdk.experimental_desktopBrowsers.openConnection({
+        ...session.scope,
+        leaseId: session.leaseId,
+      });
+      session.wsEndpoint = connection.wsEndpoint;
+    }
+    session.controller.signal.throwIfAborted();
+    return action(session.wsEndpoint);
+  }
+
+  async function releaseSessionLease(session: ActiveSession): Promise<void> {
+    const leaseId = session.leaseId;
+    session.leaseId = null;
+    session.wsEndpoint = null;
+    if (!leaseId) return;
+    await bb.sdk.experimental_desktopBrowsers.releaseControl({
+      ...session.scope,
+      leaseId,
+    }).catch(() => undefined);
   }
 
   async function storeScreenshot(
@@ -470,13 +512,18 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     session.finishing = (async () => {
       if (session.controller.signal.aborted) return;
       if (sessions.get(item.threadId) === session) sessions.delete(item.threadId);
-      if (session.wsEndpoint) {
-        await host.call(
-          "cleanupSession",
-          { wsEndpoint: session.wsEndpoint },
-          { hostId: session.hostId, timeoutMs: 15_000 },
+      if (session.leaseId) {
+        await runSessionOperation(session, () =>
+          withSessionConnection(session, (wsEndpoint) =>
+            host.call(
+              "cleanupSession",
+              { wsEndpoint },
+              { hostId: session.hostId, timeoutMs: 15_000 },
+            ),
+          ),
         ).catch(() => undefined);
       }
+      await releaseSessionLease(session);
       session.controller.abort();
       bb.realtime.publish("annotate-session", {
         threadId: item.threadId,
@@ -510,13 +557,18 @@ export default function browserAnnotate(bb: BbPluginApi): void {
   }
 
   async function stopSession(session: ActiveSession): Promise<void> {
-    if (session.wsEndpoint) {
-      await host.call(
-        "cleanupSession",
-        { wsEndpoint: session.wsEndpoint },
-        { hostId: session.hostId, timeoutMs: 15_000 },
+    if (session.leaseId && !session.controller.signal.aborted) {
+      await runSessionOperation(session, () =>
+        withSessionConnection(session, (wsEndpoint) =>
+          host.call(
+            "cleanupSession",
+            { wsEndpoint },
+            { hostId: session.hostId, timeoutMs: 15_000 },
+          ),
+        ),
       ).catch(() => undefined);
     }
+    await releaseSessionLease(session);
     if (sessions.get(session.scope.threadId) === session) {
       sessions.delete(session.scope.threadId);
     }
@@ -524,16 +576,18 @@ export default function browserAnnotate(bb: BbPluginApi): void {
   }
 
   async function restartSessionForUrl(session: ActiveSession, currentUrl: string) {
-    if (!session.wsEndpoint) return null;
+    if (!session.leaseId) return null;
     const current = pending.get(session.batchId) ??
       await loadBatch(session.batchId, session.scope.threadId);
     const draft = current?.batch.url === currentUrl
       ? current
       : await latestPendingBatchForUrl(session.scope.threadId, currentUrl);
-    const restarted = await host.call(
-      "startSession",
-      { wsEndpoint: session.wsEndpoint, batch: draft?.batch ?? null },
-      { hostId: session.hostId, timeoutMs: 15_000 },
+    const restarted = await withSessionConnection(session, (wsEndpoint) =>
+      host.call(
+        "startSession",
+        { wsEndpoint, batch: draft?.batch ?? null },
+        { hostId: session.hostId, timeoutMs: 15_000 },
+      ),
     );
     if (draft && restarted.restored) {
       session.batchId = draft.id;
@@ -549,19 +603,23 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     }
     session.screenshots.clear();
     session.stagedRevision = -1;
-    return host.call(
-      "readSession",
-      { wsEndpoint: session.wsEndpoint, afterRevision: -1 },
-      { hostId: session.hostId, timeoutMs: 30_000 },
+    return withSessionConnection(session, (wsEndpoint) =>
+      host.call(
+        "readSession",
+        { wsEndpoint, afterRevision: -1 },
+        { hostId: session.hostId, timeoutMs: 30_000 },
+      ),
     );
   }
 
-  async function refreshSession(session: ActiveSession, afterRevision: number) {
-    if (!session.wsEndpoint) return null;
-    let result = await host.call(
-      "readSession",
-      { wsEndpoint: session.wsEndpoint, afterRevision },
-      { hostId: session.hostId, timeoutMs: 30_000 },
+  async function refreshSessionUnlocked(session: ActiveSession, afterRevision: number) {
+    if (!session.leaseId) return null;
+    let result = await withSessionConnection(session, (wsEndpoint) =>
+      host.call(
+        "readSession",
+        { wsEndpoint, afterRevision },
+        { hostId: session.hostId, timeoutMs: 30_000 },
+      ),
     );
     applyCaptures(session, result.captures);
 
@@ -599,6 +657,10 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     return result;
   }
 
+  async function refreshSession(session: ActiveSession, afterRevision: number) {
+    return runSessionOperation(session, () => refreshSessionUnlocked(session, afterRevision));
+  }
+
   bb.ui.registerMentionProvider({
     id: "browser-comments",
     label: "Browser comments",
@@ -620,7 +682,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       let item = pending.get(itemId) ?? await loadBatch(itemId);
       if (!item) throw new Error("Browser comments expired or were removed");
       const session = sessions.get(item.threadId);
-      if (session?.batchId === item.id && session.wsEndpoint) {
+      if (session?.batchId === item.id && session.leaseId) {
         const latest = await refreshSession(session, -1);
         if (!latest) throw new Error("Browser annotation session is not ready");
         if (latest.editor) throw new Error("Finish or cancel the open browser annotation first");
@@ -658,6 +720,14 @@ export default function browserAnnotate(bb: BbPluginApi): void {
   });
 
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
+    async getShortcut() {
+      return { shortcut: await bb.storage.kv.get<string>("annotationShortcut") ?? "Mod+Shift+A" };
+    },
+    async setShortcut({ shortcut }) {
+      await bb.storage.kv.set("annotationShortcut", shortcut);
+      bb.realtime.publish("shortcut-changed", {});
+      return { shortcut };
+    },
     async start({ threadId, tabId }) {
       const scope = await findScope(threadId, tabId);
       const previous = sessions.get(threadId);
@@ -666,9 +736,11 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       const controller = new AbortController();
       const session: ActiveSession = {
         controller,
+        operationTail: Promise.resolve(),
         tabId,
         hostId: scope.hostId,
         scope,
+        leaseId: null,
         wsEndpoint: null,
         batchId: resumed?.id ?? `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`,
         screenshots: new Map(),
@@ -684,27 +756,36 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       sessions.set(threadId, session);
       await bb.sdk.experimental_desktopBrowsers.revealTab({ ...scope, tabId });
 
-      void withLease(scope, tabId, controller.signal, async (wsEndpoint) => {
-        const started = await host.call(
-          "startSession",
-          { wsEndpoint, batch: resumed?.batch ?? null },
-          {
-            hostId: scope.hostId,
-            signal: controller.signal,
-            timeoutMs: 15_000,
-          },
-        );
-        if (resumed && !started.restored) {
-          const matchingDraft = await latestPendingBatchForUrl(threadId, started.currentUrl);
-          if (matchingDraft && matchingDraft.id !== resumed.id) {
-            const matchingStarted = await host.call(
+      void (async () => {
+        session.leaseId = await acquireSessionLease(scope, tabId, controller.signal);
+        const started = await runSessionOperation(session, () =>
+          withSessionConnection(session, (wsEndpoint) =>
+            host.call(
               "startSession",
-              { wsEndpoint, batch: matchingDraft.batch },
+              { wsEndpoint, batch: resumed?.batch ?? null },
               {
                 hostId: scope.hostId,
                 signal: controller.signal,
                 timeoutMs: 15_000,
               },
+            ),
+          ),
+        );
+        if (resumed && !started.restored) {
+          const matchingDraft = await latestPendingBatchForUrl(threadId, started.currentUrl);
+          if (matchingDraft && matchingDraft.id !== resumed.id) {
+            const matchingStarted = await runSessionOperation(session, () =>
+              withSessionConnection(session, (wsEndpoint) =>
+                host.call(
+                  "startSession",
+                  { wsEndpoint, batch: matchingDraft.batch },
+                  {
+                    hostId: scope.hostId,
+                    signal: controller.signal,
+                    timeoutMs: 15_000,
+                  },
+                ),
+              ),
             );
             if (matchingStarted.restored) {
               session.batchId = matchingDraft.id;
@@ -723,13 +804,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
             session.imagePaths.clear();
           }
         }
-        session.wsEndpoint = wsEndpoint;
-        if (!controller.signal.aborted) {
-          await new Promise<void>((resolve) => {
-            controller.signal.addEventListener("abort", () => resolve(), { once: true });
-          });
-        }
-      })
+      })()
         .catch((error: unknown) => {
           if (sessions.get(threadId)?.controller !== controller) return;
           const cancelled = controller.signal.aborted;
@@ -747,11 +822,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
               error: error instanceof Error ? error.message : String(error),
             });
           }
-        })
-        .finally(() => {
-          if (sessions.get(threadId)?.controller === controller) {
-            sessions.delete(threadId);
-          }
+          void stopSession(session);
         });
 
       return { ok: true as const };
@@ -760,7 +831,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     async stop({ threadId }) {
       const session = sessions.get(threadId);
       if (!session) return { cancelled: false };
-      if (session.wsEndpoint) {
+      if (session.leaseId) {
         const latest = await refreshSession(session, -1).catch(() => null);
         if (latest?.batch) {
           await stageBatch(session, latest.batch);
@@ -821,7 +892,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           batches: await pendingSummaries(threadId),
         };
       }
-      if (session.wsEndpoint === null) {
+      if (session.leaseId === null) {
         return {
           active: true,
           revision: Math.max(0, afterRevision),
@@ -833,7 +904,16 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           batches: await pendingSummaries(threadId),
         };
       }
-      const result = await refreshSession(session, afterRevision);
+      let result;
+      try {
+        result = await refreshSession(session, afterRevision);
+      } catch (error) {
+        bb.log.warn(
+          `Could not read annotation session: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        await stopSession(session);
+        throw error;
+      }
       if (!result) throw new Error("Browser annotation session is not ready");
       if (result.status === "cancelled") {
         await stopSession(session);
@@ -910,21 +990,29 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
     async preview({ threadId, editorId, previewRevision, designChange }) {
       const session = sessions.get(threadId);
-      if (!session?.wsEndpoint) return { changed: false };
-      return host.call(
-        "previewEditor",
-        { wsEndpoint: session.wsEndpoint, editorId, previewRevision, designChange },
-        { hostId: session.hostId, timeoutMs: 15_000 },
+      if (!session?.leaseId) return { changed: false };
+      return runSessionOperation(session, () =>
+        withSessionConnection(session, (wsEndpoint) =>
+          host.call(
+            "previewEditor",
+            { wsEndpoint, editorId, previewRevision, designChange },
+            { hostId: session.hostId, timeoutMs: 15_000 },
+          ),
+        ),
       );
     },
 
     async save({ threadId, editorId, comment, designChange }) {
       const session = sessions.get(threadId);
-      if (!session?.wsEndpoint) return { saved: false };
-      const result = await host.call(
-        "saveEditor",
-        { wsEndpoint: session.wsEndpoint, editorId, comment, designChange },
-        { hostId: session.hostId, timeoutMs: 30_000 },
+      if (!session?.leaseId) return { saved: false };
+      const result = await runSessionOperation(session, () =>
+        withSessionConnection(session, (wsEndpoint) =>
+          host.call(
+            "saveEditor",
+            { wsEndpoint, editorId, comment, designChange },
+            { hostId: session.hostId, timeoutMs: 30_000 },
+          ),
+        ),
       );
       if (!result.saved || !result.batch) return { saved: false };
       applyCaptures(session, result.captures);
@@ -936,17 +1024,21 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
     async cancelEditor({ threadId, editorId }) {
       const session = sessions.get(threadId);
-      if (!session?.wsEndpoint) return { changed: false };
-      return host.call(
-        "cancelEditor",
-        { wsEndpoint: session.wsEndpoint, editorId },
-        { hostId: session.hostId, timeoutMs: 15_000 },
+      if (!session?.leaseId) return { changed: false };
+      return runSessionOperation(session, () =>
+        withSessionConnection(session, (wsEndpoint) =>
+          host.call(
+            "cancelEditor",
+            { wsEndpoint, editorId },
+            { hostId: session.hostId, timeoutMs: 15_000 },
+          ),
+        ),
       );
     },
 
     async send({ threadId }) {
       const session = sessions.get(threadId);
-      if (!session?.wsEndpoint) return { sent: false };
+      if (!session?.leaseId) return { sent: false };
       const latest = await refreshSession(session, -1);
       if (!latest?.batch || latest.editor) return { sent: false };
       await sendSessionBatch(session, latest.batch);
@@ -955,21 +1047,25 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
     async mutate({ threadId, annotationId, action }) {
       const session = sessions.get(threadId);
-      if (session?.wsEndpoint) {
+      if (session?.leaseId) {
         if (action === "open") {
           await bb.sdk.experimental_desktopBrowsers.revealTab({
             ...session.scope,
             tabId: session.tabId,
           });
         }
-        const changed = await host.call(
-          "mutateSession",
-          {
-            wsEndpoint: session.wsEndpoint,
-            annotationId,
-            action,
-          },
-          { hostId: session.hostId, timeoutMs: 15_000 },
+        const changed = await runSessionOperation(session, () =>
+          withSessionConnection(session, (wsEndpoint) =>
+            host.call(
+              "mutateSession",
+              {
+                wsEndpoint,
+                annotationId,
+                action,
+              },
+              { hostId: session.hostId, timeoutMs: 15_000 },
+            ),
+          ),
         );
         if (changed.changed && action === "delete") {
           const latest = await refreshSession(session, -1);
@@ -1058,3 +1154,4 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     pending.clear();
   });
 }
+import { z } from "zod";

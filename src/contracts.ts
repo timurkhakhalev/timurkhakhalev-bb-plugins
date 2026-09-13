@@ -121,11 +121,14 @@ export type Batch = z.infer<typeof batchSchema>;
 export const editorDraftSchema = z
   .object({
     id: idSchema,
+    rect: rectSchema,
     annotationId: idSchema.nullable(),
+    viewport: z.object({ width: z.number().positive(), height: z.number().positive() }).strict(),
     tag: z.string().max(64),
     target: z.string().max(1000),
     comment: z.string().max(4000),
     designChange: designChangeSchema,
+    previewDataUrl: z.string().max(12_000_000).nullable(),
   })
   .strict();
 export type EditorDraft = z.infer<typeof editorDraftSchema>;
@@ -245,6 +248,14 @@ export const hostContract = {
 
 /** app.tsx ↔ server */
 export const rpcContract = {
+  getShortcut: {
+    input: z.object({}).strict(),
+    output: z.object({ shortcut: z.string() }).strict(),
+  },
+  setShortcut: {
+    input: z.object({ shortcut: z.string().regex(/^(?:(?:Mod|Meta|Ctrl|Alt|Shift)\+)+[A-Z.]$|^$/i) }).strict(),
+    output: z.object({ shortcut: z.string() }).strict(),
+  },
   start: {
     input: z
       .object({

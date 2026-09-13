@@ -13,6 +13,8 @@ const CONTROL_ENDED = "Browser control ended";
 const PAGE_SCRIPT = `
 (() => {
   if (window.__bbAnnotateCleanup) window.__bbAnnotateCleanup();
+  document.dispatchEvent(new Event("__bbAnnotateDispose"));
+  document.querySelectorAll("#__bbAnnRoot, #__bbAnnDesignStyle").forEach((node) => node.remove());
 
   const NS = "__bbAnnotate";
   const state = {
@@ -125,8 +127,8 @@ const PAGE_SCRIPT = `
     "flex-direction", "justify-content", "align-items", "gap", "row-gap", "column-gap",
   ];
   const taggedElements = new Set();
-  let applyingPreview = false;
-  let previewGuardTimer = 0;
+  let previewFrame = 0;
+  let disposed = false;
 
   const soleTextNode = (element) => {
     const nodes = Array.from(element.childNodes).filter(
@@ -171,7 +173,7 @@ const PAGE_SCRIPT = `
   };
   const setTrackedText = (item, value) => {
     const node = trackedTextNode(item, false);
-    if (node) node.nodeValue = value;
+    if (node && node.nodeValue !== value) node.nodeValue = value;
   };
   const activeSources = () => {
     const saved = state.items.filter((item) => !formAnnotation || item.id !== formAnnotation.id);
@@ -187,9 +189,8 @@ const PAGE_SCRIPT = `
     }
   };
   const renderDesignPreview = () => {
-    if (!designStyle.isConnected) return;
-    applyingPreview = true;
-    window.clearTimeout(previewGuardTimer);
+    if (disposed || !designStyle.isConnected) return;
+    mutationObserver.disconnect();
     const known = [...state.items, ...(formDraft ? [formDraft] : [])];
     for (const item of known) {
       if (!item.designChange || !item.designChange.text) continue;
@@ -225,7 +226,7 @@ const PAGE_SCRIPT = `
         setTrackedText(item, design.text.value);
       }
     }
-    previewGuardTimer = window.setTimeout(() => { applyingPreview = false; }, 0);
+    observePage();
   };
 
   const createDesignDraft = (element, annotation, id) => {
@@ -466,11 +467,14 @@ const PAGE_SCRIPT = `
     state.editorPreviewRevision = 0;
     state.editor = {
       id: "editor_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2),
+      rect: (() => { const r = formTarget.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })(),
       annotationId: annotation ? annotation.id : null,
+      viewport: { width: innerWidth, height: innerHeight },
       tag: formTarget.tagName.toLowerCase(),
       target: annotation ? annotation.target : formPendingItem.target,
       comment: annotation ? annotation.comment : "",
       designChange: formDraft.designChange,
+      previewDataUrl: null,
     };
     renderDesignPreview();
     hideHover();
@@ -496,7 +500,14 @@ const PAGE_SCRIPT = `
     paintHover(node);
   };
 
-  const onClick = (event) => {
+  const blockClick = (event) => {
+    if (ownNode(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  };
+
+  const onPointerDown = (event) => {
     if (ownNode(event.target)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -638,10 +649,14 @@ const PAGE_SCRIPT = `
   const finish = (kind) => { if (!window.__bbAnnotateDone) done(kind); };
 
   const cleanup = () => {
+    if (disposed) return;
+    disposed = true;
     mutationObserver.disconnect();
-    window.clearTimeout(previewGuardTimer);
+    window.cancelAnimationFrame(previewFrame);
+    document.removeEventListener("__bbAnnotateDispose", cleanup);
     document.removeEventListener("mousemove", onMove, true);
-    document.removeEventListener("click", onClick, true);
+    document.removeEventListener("pointerdown", onPointerDown, true);
+    document.removeEventListener("click", blockClick, true);
     document.removeEventListener("keydown", onKey, true);
     window.removeEventListener("scroll", refreshOverlay, true);
     window.removeEventListener("resize", refreshOverlay, true);
@@ -650,6 +665,7 @@ const PAGE_SCRIPT = `
     for (const outline of outlines.values()) outline.remove();
     outlines.clear();
     for (const item of state.items) restoreDesignText(item);
+    if (formDraft) restoreDesignText(formDraft);
     for (const element of taggedElements) element.removeAttribute("data-bb-annotation-design");
     taggedElements.clear();
     designStyle.remove();
@@ -667,16 +683,26 @@ const PAGE_SCRIPT = `
   };
 
   document.addEventListener("mousemove", onMove, true);
-  document.addEventListener("click", onClick, true);
+  document.addEventListener("pointerdown", onPointerDown, true);
+  document.addEventListener("click", blockClick, true);
   document.addEventListener("keydown", onKey, true);
   window.addEventListener("scroll", refreshOverlay, true);
   window.addEventListener("resize", refreshOverlay, true);
-  const mutationObserver = new MutationObserver(() => {
-    if (!applyingPreview) requestAnimationFrame(renderDesignPreview);
+  document.addEventListener("__bbAnnotateDispose", cleanup);
+  const mutationObserver = new MutationObserver((records) => {
+    if (disposed || previewFrame || !records.some((record) => !ownNode(record.target))) return;
+    if (!activeSources().some((item) => item.designChange)) return;
+    previewFrame = requestAnimationFrame(() => {
+      previewFrame = 0;
+      renderDesignPreview();
+    });
   });
-  if (document.body) {
-    mutationObserver.observe(document.body, { childList: true, characterData: true, subtree: true });
-  }
+  const observePage = () => {
+    if (!disposed && document.body) {
+      mutationObserver.observe(document.body, { childList: true, characterData: true, subtree: true });
+    }
+  };
+  observePage();
   if (shouldRestore) {
     state.items = restoreBatch.annotations.map((annotation, index) => {
       let element = null;
@@ -797,12 +823,28 @@ function connect(wsEndpoint: string) {
   return {
     opened,
     request,
-    close() {
+    close(message = CONTROL_ENDED) {
+      if (ended) return;
+      ended = true;
+      rejectOpened(new Error(message));
+      failPending(message);
       socket.close();
-      for (const request of pending.values()) clearTimeout(request.timeout);
-      pending.clear();
     },
   };
+}
+
+// Endpoints are single-use. Keep the CDP attachment alive so its isolated world
+// and selection state survive subsequent host RPC calls.
+const pageConnections = new Map<string, {
+  connection: Connection;
+  sessionId: string | null;
+  preview?: { key: string; dataUrl: string };
+}>();
+
+function closePage(wsEndpoint: string): void {
+  const page = pageConnections.get(wsEndpoint);
+  pageConnections.delete(wsEndpoint);
+  page?.connection.close();
 }
 
 async function withPage<T>(
@@ -811,20 +853,25 @@ async function withPage<T>(
   run: (connection: Connection, sessionId: string, contextId: number) => Promise<T>,
 ): Promise<T> {
   signal.throwIfAborted();
-  const connection = connect(wsEndpoint);
+  let page = pageConnections.get(wsEndpoint);
+  if (!page) {
+    page = { connection: connect(wsEndpoint), sessionId: null };
+    pageConnections.set(wsEndpoint, page);
+  }
+  const { connection } = page;
   let rejectOnAbort!: (reason: Error) => void;
   const aborted = new Promise<never>((_resolve, reject) => {
     rejectOnAbort = reject;
   });
-  const onAbort = () => rejectOnAbort(new Error("Annotate session cancelled"));
+  const onAbort = () => {
+    const error = new Error("Annotate session cancelled");
+    closePage(wsEndpoint);
+    rejectOnAbort(error);
+  };
   signal.addEventListener("abort", onAbort, { once: true });
   try {
     await Promise.race([connection.opened, aborted]);
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-  }
-  let sessionId: string | null = null;
-  try {
+    if (!page.sessionId) {
     const targets = z
       .object({
         targetInfos: z.array(z.object({ targetId: z.string(), type: z.string() })),
@@ -832,12 +879,14 @@ async function withPage<T>(
       .parse(await connection.request("Target.getTargets"))
       .targetInfos.filter((target) => target.type === "page");
     if (targets.length !== 1) throw new Error("Selected Browser tab is no longer available");
-    sessionId = z.object({ sessionId: z.string() }).parse(
+    page.sessionId = z.object({ sessionId: z.string() }).parse(
       await connection.request("Target.attachToTarget", {
         targetId: targets[0].targetId,
         flatten: true,
       }),
     ).sessionId;
+    }
+    const sessionId = page.sessionId;
     const frameId = z
       .object({ frameTree: z.object({ frame: z.object({ id: z.string() }) }) })
       .parse(await connection.request("Page.getFrameTree", {}, sessionId)).frameTree.frame.id;
@@ -855,11 +904,11 @@ async function withPage<T>(
         ),
       ).executionContextId;
     return await run(connection, sessionId, contextId);
+  } catch (error) {
+    closePage(wsEndpoint);
+    throw error;
   } finally {
-    if (sessionId !== null) {
-      await connection.request("Target.detachFromTarget", { sessionId }).catch(() => undefined);
-    }
-    connection.close();
+    signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -1045,6 +1094,17 @@ export default experimental_defineHostEntry({
           })
           .parse(raw);
         const captureResult = await drainCaptures(connection, sessionId, contextId);
+        const page = pageConnections.get(input.wsEndpoint)!;
+        if (value.editor) {
+          const key = JSON.stringify([value.editor.id, value.editor.designChange]);
+          if (page.preview?.key !== key) {
+            const image = await screenshot(connection, sessionId, contextId);
+            page.preview = { key, dataUrl: `data:${image.mimeType};base64,${image.base64}` };
+          }
+          value.editor.previewDataUrl = page.preview.dataUrl;
+        } else {
+          delete page.preview;
+        }
         return {
           status: value.currentUrl === value.batch.url ? "active" as const : "navigated" as const,
           revision: value.revision,
@@ -1132,7 +1192,8 @@ export default experimental_defineHostEntry({
       }));
     },
     cleanupSession: async (input, context) => {
-      return withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => {
+      try {
+        return await withPage(input.wsEndpoint, context.signal, async (connection, sessionId, contextId) => {
         await evaluate(
           connection,
           sessionId,
@@ -1140,7 +1201,10 @@ export default experimental_defineHostEntry({
           "window.__bbAnnotateCleanup && window.__bbAnnotateCleanup(); true",
         ).catch(() => undefined);
         return { cleaned: true as const };
-      });
+        });
+      } finally {
+        closePage(input.wsEndpoint);
+      }
     },
   },
 });
