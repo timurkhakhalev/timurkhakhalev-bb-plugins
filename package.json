@@ -3,8 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "bun --cwd plugins/browser-annotate run check",
+    "check": "bun run --cwd plugins/browser-annotate check",
     "build": "bb plugin build plugins/browser-annotate"
   }
 }
-
