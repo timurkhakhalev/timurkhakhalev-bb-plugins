@@ -19,7 +19,7 @@ afterAll(async () => {
   await cleanupBundle?.();
 });
 
-function hostFor(fixture: CdpFixture): HostHarness {
+function hostFor(): HostHarness {
   return experimental_createHostEntryHarness(bundledEntry, {
     experimental_paths: {
       dataDir: "/tmp/browser-annotate-test-data",
@@ -75,7 +75,7 @@ async function closeSession(harness: HostHarness, fixture: CdpFixture): Promise<
 describe("actual host entry and injected page script", () => {
   test("selection creates the trusted editor and save returns the complete comment batch", async () => {
     const fixture = new CdpFixture();
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await expect(start(harness, fixture)).resolves.toMatchObject({
         started: true,
@@ -111,7 +111,7 @@ describe("actual host entry and injected page script", () => {
     const fixture = new CdpFixture({
       html: "<!doctype html><html><head></head><body><main><button>  Some sample text  </button><span id='empty'></span></main></body></html>",
     });
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture);
       click(fixture.dom.window, "button");
@@ -155,7 +155,7 @@ describe("actual host entry and injected page script", () => {
 
   test("Escape closes the picker and removes its listeners and page-owned nodes", async () => {
     const fixture = new CdpFixture();
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture);
       expect(fixture.dom.window.document.getElementById("__bbAnnRoot")).not.toBeNull();
@@ -172,7 +172,7 @@ describe("actual host entry and injected page script", () => {
 
   test("editing an annotation increments its version and captures the edited image", async () => {
     const fixture = new CdpFixture();
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture);
       click(fixture.dom.window, "button");
@@ -209,7 +209,7 @@ describe("actual host entry and injected page script", () => {
 
   test("capture failure is requeued and succeeds on a later read", async () => {
     const fixture = new CdpFixture();
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture);
       click(fixture.dom.window, "button");
@@ -237,7 +237,7 @@ describe("actual host entry and injected page script", () => {
 
   test("restores a batch only on the same URL", async () => {
     const sameFixture = new CdpFixture({ url: "https://example.test/same" });
-    const sameHarness = hostFor(sameFixture);
+    const sameHarness = hostFor();
     try {
       const sameBatch = restoredBatch(1, sameFixture.url);
       await expect(start(sameHarness, sameFixture, sameBatch)).resolves.toMatchObject({ restored: true });
@@ -249,7 +249,7 @@ describe("actual host entry and injected page script", () => {
     }
 
     const differentFixture = new CdpFixture({ url: "https://example.test/different" });
-    const differentHarness = hostFor(differentFixture);
+    const differentHarness = hostFor();
     try {
       const oldBatch = restoredBatch(1, "https://example.test/same");
       await expect(start(differentHarness, differentFixture, oldBatch)).resolves.toMatchObject({ restored: false });
@@ -263,7 +263,7 @@ describe("actual host entry and injected page script", () => {
 
   test("#3 50 large captures stay under the host RPC limit without losing queued captures", async () => {
     const fixture = new CdpFixture({ screenshotBase64: "A".repeat(200_000) });
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture, restoredBatch(50, fixture.url));
       const limit = 8 * 1024 * 1024;
@@ -305,7 +305,7 @@ describe("actual host entry and injected page script", () => {
 
   test("#3 an oversized capture stays bounded and remains marked for delayed retry", async () => {
     const fixture = new CdpFixture({ screenshotBase64: "A".repeat(8_350_000) });
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture, restoredBatch(1, fixture.url));
       const first = await read(harness, fixture) as {
@@ -331,7 +331,7 @@ describe("actual host entry and injected page script", () => {
 
   test("#5 active sessions retain the host worker until cleanup", async () => {
     const fixture = new CdpFixture();
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture);
       expect(harness.experimental_getRetainedWorkerLeaseCount()).toBeGreaterThan(0);
@@ -357,7 +357,7 @@ describe("actual host entry and injected page script", () => {
   test("#5 independent sessions retain and release their own host workers", async () => {
     const firstFixture = new CdpFixture();
     const secondFixture = new CdpFixture();
-    const harness = hostFor(firstFixture);
+    const harness = hostFor();
     try {
       await start(harness, firstFixture);
       await start(harness, secondFixture);
@@ -386,7 +386,7 @@ describe("actual host entry and injected page script", () => {
 
   test("#5 failed and cancelled host calls do not retain workers", async () => {
     const failedFixture = new CdpFixture({ targetCount: 2 });
-    const failedHarness = hostFor(failedFixture);
+    const failedHarness = hostFor();
     try {
       await expect(start(failedHarness, failedFixture)).rejects.toThrow("Selected Browser tab is no longer available");
       expect(failedHarness.experimental_getRetainedWorkerLeaseCount()).toBe(0);
@@ -400,7 +400,7 @@ describe("actual host entry and injected page script", () => {
     }
 
     const cancelledFixture = new CdpFixture();
-    const cancelledHarness = hostFor(cancelledFixture);
+    const cancelledHarness = hostFor();
     try {
       const controller = new AbortController();
       const call = cancelledHarness.experimental_call("startSession", {
@@ -418,7 +418,7 @@ describe("actual host entry and injected page script", () => {
 
   test("#8 long page title does not kill the annotation session", async () => {
     const fixture = new CdpFixture({ title: "T".repeat(501) });
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture);
       click(fixture.dom.window, "button");
@@ -447,7 +447,7 @@ describe("actual host entry and injected page script", () => {
     const fixture = new CdpFixture({
       html: `<!doctype html><html><head></head><body><main><button id="${longId}" class="${longClass}" role="${longRole}" ${longAttribute}="${longAttributeValue}">Continue</button></main></body></html>`,
     });
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture);
       click(fixture.dom.window, "button");
@@ -497,7 +497,7 @@ describe("actual host entry and injected page script", () => {
     const fixture = new CdpFixture({
       html: `<!doctype html><html><head></head><body><main><${longTag}>Continue</${longTag}></main></body></html>`,
     });
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture);
       click(fixture.dom.window, longTag);
@@ -522,7 +522,7 @@ describe("actual host entry and injected page script", () => {
     const fixture = new CdpFixture({
       html: "<!doctype html><html><head></head><body><main><button> Some\n sample\ttext </button></main></body></html>",
     });
-    const harness = hostFor(fixture);
+    const harness = hostFor();
     try {
       await start(harness, fixture);
       click(fixture.dom.window, "button");

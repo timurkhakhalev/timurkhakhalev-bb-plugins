@@ -52,4 +52,8 @@ published version. After publication, run `bb plugin migrate --yes`, install
 the published SDK, then require both `bun run check:published-sdk` and
 `bb plugin build` to pass.
 
+Before an npm release, run `bun pm pack --dry-run --ignore-scripts`. The file
+list must include `dist/server.js`, `dist/host.js`, `dist/app.js` and their
+metadata, while excluding regression fixtures and the legacy `types/` copy.
+
 Fidelity limits: screenshots are deterministic CDP stubs, layout metrics are JSDOM values, and the fixture does not emulate Electron, real daemon worker scheduling, real browser navigation, or published-SDK packaging. Those checks remain required before release.

@@ -1427,4 +1427,3 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     pending.clear();
   });
 }
-import { z } from "zod";
