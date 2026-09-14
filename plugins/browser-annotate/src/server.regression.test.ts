@@ -642,6 +642,32 @@ describe("server browser annotation workflow", () => {
     expect(pending).toEqual({ batches: [] });
   });
 
+  test("sent annotation history survives missing thread-storage files", async () => {
+    const harness = createServerHarness();
+    await startServer(harness);
+    await harness.harness.callRpc("live", { threadId: TEST_THREAD_ID, afterRevision: -1 });
+    const draft = await harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID }) as {
+      batches: Array<{ id: string }>;
+    };
+    const batchId = draft.batches[0].id;
+
+    await expect(
+      harness.harness.callRpc("send", { threadId: TEST_THREAD_ID }),
+    ).resolves.toEqual({ sent: true });
+    for (const path of [...harness.files.keys()]) harness.files.delete(path);
+
+    const reloaded = await harness.harness.lifecycle.reload((bb) => browserAnnotate(bb));
+    await expect(
+      reloaded.harness.callRpc("batch", { threadId: TEST_THREAD_ID, batchId }),
+    ).resolves.toMatchObject({
+      editable: false,
+      annotations: [{ id: "ann_test", comment: "Keep this annotation." }],
+    });
+    await expect(
+      reloaded.harness.registrations.mentionProviders[0].resolve(batchId),
+    ).resolves.toMatchObject({ context: expect.stringContaining("# Browser comments:") });
+  });
+
   test("#7 draft expiry removes unsent storage without removing same-age sent history", async () => {
     const harness = createServerHarness();
     await startServer(harness, "thread-draft", "tab-thread-a");

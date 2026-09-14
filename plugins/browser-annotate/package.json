@@ -20,7 +20,6 @@
     "src/editor-placement.ts",
     "src/host.ts",
     "src/server.ts",
-    "src/shortcut.ts",
     "scripts/check-published-sdk.mjs",
     "tsconfig.published-sdk.json",
     "README.md",
@@ -53,7 +52,7 @@
   },
   "engines": {
     "bb": ">=0.43",
-    "bbPluginSdk": ">=0.4.89"
+    "bbPluginSdk": ">=0.4.88"
   },
   "bb": {
     "name": "Browser Annotate",

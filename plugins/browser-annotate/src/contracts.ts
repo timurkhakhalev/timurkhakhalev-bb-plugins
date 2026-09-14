@@ -248,14 +248,6 @@ export const hostContract = {
 
 /** app.tsx ↔ server */
 export const rpcContract = {
-  getShortcut: {
-    input: z.object({}).strict(),
-    output: z.object({ shortcut: z.string() }).strict(),
-  },
-  setShortcut: {
-    input: z.object({ shortcut: z.string().regex(/^(?:(?:Mod|Meta|Ctrl|Alt|Shift)\+)+[A-Z.]$|^$/i) }).strict(),
-    output: z.object({ shortcut: z.string() }).strict(),
-  },
   start: {
     input: z
       .object({

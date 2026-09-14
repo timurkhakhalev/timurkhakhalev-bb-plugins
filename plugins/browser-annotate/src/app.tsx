@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { placeEditor } from "./editor-placement.js";
-import { defaultShortcut, matchesShortcut } from "./shortcut.js";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   definePluginApp,
@@ -258,50 +257,8 @@ function findBrowserNavigation(element: Element | null): Element | null {
   return null;
 }
 
-function useAnnotationShortcut() {
-  const rpc = useRpc<typeof rpcContract>();
-  const [shortcut, setShortcut] = useState(defaultShortcut);
-  const refresh = useCallback(() => { void rpc.call("getShortcut", {}).then((value) => setShortcut(value.shortcut)); }, [rpc]);
-  useEffect(refresh, [refresh]);
-  useRealtime("shortcut-changed", refresh);
-  return shortcut;
-}
-
-function ShortcutSettings() {
-  const shortcut = useAnnotationShortcut();
-  const rpc = useRpc<typeof rpcContract>();
-  const [recording, setRecording] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const save = async (value: string) => {
-    setRecording(false);
-    setSaving(true);
-    setError("");
-    try { await rpc.call("setShortcut", { shortcut: value }); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save shortcut"); }
-    finally { setSaving(false); }
-  };
-  return <div className="flex flex-wrap items-center justify-between gap-3">
-    <div><p className="text-sm font-medium">Annotation mode shortcut</p><p className="text-xs text-muted-foreground">Click to record. Press a modifier + letter. Escape cancels.</p>{error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}</div>
-    <div className="flex items-center gap-2">
-      <button type="button" disabled={saving} aria-pressed={recording} onBlur={() => setRecording(false)} onClick={() => { setError(""); setRecording(true); }}
-        onKeyDown={(event) => {
-          if (!recording) return;
-          event.preventDefault(); event.stopPropagation();
-          if (event.key === "Escape") { setRecording(false); return; }
-          if (event.repeat || event.nativeEvent.isComposing || !/^(Key[A-Z]|Period)$/.test(event.code)) return;
-          const modifiers = [event.metaKey && "Meta", event.ctrlKey && "Ctrl", event.altKey && "Alt", event.shiftKey && "Shift"].filter(Boolean);
-          if (!modifiers.length) { setError("Include Cmd, Ctrl, Alt or Shift."); return; }
-          void save([...modifiers, event.code === "Period" ? "." : event.code.slice(3)].join("+"));
-        }}
-        className="min-w-40 rounded-md border border-border px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">{recording ? "Press shortcut…" : saving ? "Saving…" : shortcut || "Set shortcut"}</button>
-      <button type="button" disabled={saving || !shortcut} onClick={() => void save("")} className="px-2 py-2 text-xs text-muted-foreground">Disable</button>
-    </div>
-  </div>;
-}
-
 function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToolbarActionProps) {
-  const shortcut = useAnnotationShortcut();
+  const tooltipId = useId();
   const commentRef = useRef<HTMLTextAreaElement | null>(null);
   const [previewReadyId, setPreviewReadyId] = useState<string | null>(null);
   const rpc = useRpc<typeof rpcContract>();
@@ -570,36 +527,33 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
   }, [rpc, threadId]);
 
   const designChanged = design ? changedDesign(design) : null;
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat || event.isComposing || busy) return;
-      const button = buttonRef.current;
-      if (!button || !button.checkVisibility() || !button.getBoundingClientRect().width) return;
-      if (!matchesShortcut(event, shortcut, /Mac/.test(navigator.platform))) return;
-      event.preventDefault();
-      event.stopPropagation();
-      void toggle();
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [shortcut, busy, editor, toggle]);
   const canSave = Boolean(editor && (comment.trim().length > 0 || designChanged));
+  const actionLabel = active ? "Stop annotation mode" : "Start annotation mode";
 
   return (
     <>
-      <button
-        ref={buttonRef}
-        type="button"
-        className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 ${active ? "bg-card text-blue-500" : "text-muted-foreground hover:text-foreground"}`}
-        title={active ? "Stop annotating" : "Annotate this page"}
-        aria-label={active ? "Stop annotating this page" : "Annotate this page"}
-        aria-pressed={active}
-        disabled={busy}
-        onClick={() => void toggle()}
-      >
-        {annotateIcon}
-        <span className="hidden xl:inline">{active ? "Annotating" : "Annotate"}</span>
-      </button>
+      <span className="group relative inline-flex shrink-0">
+        <button
+          ref={buttonRef}
+          type="button"
+          className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 ${active ? "bg-card text-blue-500" : "text-muted-foreground hover:text-foreground"}`}
+          aria-label={actionLabel}
+          aria-describedby={tooltipId}
+          aria-pressed={active}
+          disabled={busy}
+          onClick={() => void toggle()}
+        >
+          {annotateIcon}
+          <span className="hidden xl:inline">{active ? "Annotating" : "Annotate"}</span>
+        </button>
+        <span
+          id={tooltipId}
+          role="tooltip"
+          className="pointer-events-none invisible absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+        >
+          {actionLabel}
+        </span>
+      </span>
       {errorMessage && !editor ? <span role="status" className="max-w-48 text-xs text-destructive">{errorMessage}</span> : null}
       {editor?.previewDataUrl ? createPortal(
         <>
@@ -1055,7 +1009,6 @@ function SentAnnotationsHover() {
 }
 
 export default definePluginApp((app) => {
-  app.slots.settingsSection({ id: "annotation-shortcut", title: "Keyboard shortcut", component: ShortcutSettings });
   app.composer.customize({
     id: "browser-annotations-draft",
     scopes: ["thread"],

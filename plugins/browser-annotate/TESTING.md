@@ -12,7 +12,7 @@ The regression suite has two layers:
 
 - `server.regression.test.ts` loads the real server entry into the official SDK fake-host harness. It exercises validated RPC calls, KV persistence, thread-targeted send, image-version matching, capture recovery, editor/send gating, reload, disposal and composer polling without connecting to BB or a real browser. The fake host's KV/database state uses its temporary storage and is disposed after each test; the `sdk.files` adapter used here is an in-memory `Map`, so these tests do not claim durable filesystem-backed file persistence.
 - `host.regression.test.ts` bundles the real `src/host.ts` entry only to replace its vendored SDK runtime import in a temporary copy. The injected `PAGE_SCRIPT` and host handlers are otherwise the source under test. A small loopback WebSocket fixture implements the CDP subset used here (`Target.*`, `Page.*`, and `Runtime.evaluate`) and evaluates expressions in a JSDOM realm. It observes connection close events, worker-retention leases, adaptive screenshot bounds, and the official harness's serialized-result byte boundary.
-- `composer.regression.test.ts`, `editor-placement.test.ts` and `shortcut.test.ts` cover pure state transitions and shortcut/layout boundaries.
+- `composer.regression.test.ts` and `editor-placement.test.ts` cover pure state transitions and layout boundaries.
 
 The suite has no expected failures for the currently covered issues:
 

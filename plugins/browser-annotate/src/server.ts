@@ -39,6 +39,14 @@ type ActiveSession = {
 const DRAFT_TTL_MS = 24 * 60 * 60_000;
 const BATCH_STORAGE_DIRECTORY = "browser-comments";
 
+type SentBatchMeta = {
+  threadId: string;
+  createdAt: number;
+  batch: Omit<Batch, "annotations">;
+  annotationIds: string[];
+  images: Array<{ annotationId: string; version: number; path: string }>;
+};
+
 const oneLine = (value: string) => value.replace(/\s+/g, " ").trim();
 
 function renderDesignChange(annotation: Batch["annotations"][number]): string[] {
@@ -264,6 +272,9 @@ export default function browserAnnotate(bb: BbPluginApi): void {
 
   const batchThreadKey = (batchId: string) => `browser-comments:batch:${batchId}:thread`;
   const draftBatchKey = (threadId: string) => `browser-comments:thread:${threadId}:draft`;
+  const sentBatchMetaKey = (batchId: string) => `browser-comments:sent:${batchId}:meta`;
+  const sentBatchAnnotationKey = (batchId: string, index: number) =>
+    `browser-comments:sent:${batchId}:annotation:${index}`;
   const isSafeBatchId = (batchId: string) => /^[a-zA-Z0-9_-]+$/.test(batchId);
 
   function batchStoragePath(storageRootPath: string, batchId: string): string {
@@ -304,6 +315,140 @@ export default function browserAnnotate(bb: BbPluginApi): void {
   function isMissingFileError(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error);
     return /ENOENT|not found|does not exist|missing (?:test )?file/i.test(message);
+  }
+
+  function parseStoredImages(
+    rawImages: unknown,
+    storageRootPath: string,
+    batchId: string,
+  ): Array<{ annotationId: string; version: number; path: string }> {
+    if (!Array.isArray(rawImages)) return [];
+    return rawImages.flatMap((image) => {
+      const candidate = image as Record<string, unknown>;
+      if (
+        typeof image === "object" &&
+        image !== null &&
+        typeof candidate.annotationId === "string" &&
+        typeof candidate.version === "number" &&
+        Number.isInteger(candidate.version) &&
+        candidate.version > 0 &&
+        typeof candidate.path === "string" &&
+        isOwnedBatchImagePath(storageRootPath, batchId, candidate.path)
+      ) {
+        return [candidate as { annotationId: string; version: number; path: string }];
+      }
+      return [];
+    });
+  }
+
+  async function loadPreviewDataUrls(
+    location: { hostId: string; storageRootPath: string },
+    images: Array<{ annotationId: string; version: number; path: string }>,
+  ): Promise<Map<string, string>> {
+    const previewDataUrls = new Map<string, string>();
+    for (const image of images) {
+      try {
+        const preview = await bb.sdk.files.read({
+          hostId: location.hostId,
+          path: image.path,
+        });
+        if (preview.contentEncoding === "base64") {
+          previewDataUrls.set(
+            image.annotationId,
+            `data:${preview.mimeType ?? "image/jpeg"};base64,${preview.content}`,
+          );
+        }
+      } catch {
+        // The text context remains useful if an old image was removed externally.
+      }
+    }
+    return previewDataUrls;
+  }
+
+  async function hydrateStoredBatch(args: {
+    batchId: string;
+    threadId: string;
+    location: { hostId: string; storageRootPath: string };
+    createdAt: number;
+    sent: boolean;
+    batch: unknown;
+    images: unknown;
+  }): Promise<PendingBatch | null> {
+    if (
+      !Number.isFinite(args.createdAt) ||
+      !Number.isSafeInteger(args.createdAt) ||
+      typeof args.sent !== "boolean"
+    ) {
+      return null;
+    }
+    const batch = batchSchema.parse(args.batch);
+    const images = parseStoredImages(
+      args.images,
+      args.location.storageRootPath,
+      args.batchId,
+    );
+    return {
+      id: args.batchId,
+      threadId: args.threadId,
+      createdAt: args.createdAt,
+      sent: args.sent,
+      batch,
+      images,
+      previewDataUrls: await loadPreviewDataUrls(args.location, images),
+    };
+  }
+
+  async function persistSentBatch(item: PendingBatch): Promise<void> {
+    for (const [index, annotation] of item.batch.annotations.entries()) {
+      await bb.storage.kv.set(sentBatchAnnotationKey(item.id, index), annotation);
+    }
+    const { annotations: _annotations, ...batch } = item.batch;
+    await bb.storage.kv.set(sentBatchMetaKey(item.id), {
+      threadId: item.threadId,
+      createdAt: item.createdAt,
+      batch,
+      annotationIds: item.batch.annotations.map((annotation) => annotation.id),
+      images: item.images,
+    } satisfies SentBatchMeta);
+  }
+
+  async function loadSentBatch(
+    batchId: string,
+    expectedThreadId?: string,
+  ): Promise<PendingBatch | null> {
+    const rawMeta = await bb.storage.kv.get<unknown>(sentBatchMetaKey(batchId));
+    if (typeof rawMeta !== "object" || rawMeta === null) return null;
+    const meta = rawMeta as Partial<SentBatchMeta>;
+    if (
+      typeof meta.threadId !== "string" ||
+      (expectedThreadId && meta.threadId !== expectedThreadId) ||
+      typeof meta.createdAt !== "number" ||
+      !Number.isSafeInteger(meta.createdAt) ||
+      !Array.isArray(meta.annotationIds) ||
+      !meta.annotationIds.every((id) => typeof id === "string")
+    ) {
+      return null;
+    }
+    const annotations = await Promise.all(
+      meta.annotationIds.map((_, index) =>
+        bb.storage.kv.get<unknown>(sentBatchAnnotationKey(batchId, index)),
+      ),
+    );
+    if (annotations.some((annotation) => annotation === undefined)) return null;
+    try {
+      const location = await bb.sdk.threads.storageLocation({ threadId: meta.threadId });
+      return await hydrateStoredBatch({
+        batchId,
+        threadId: meta.threadId,
+        location,
+        createdAt: meta.createdAt,
+        sent: true,
+        batch: { ...(meta.batch as object), annotations },
+        images: meta.images,
+      });
+    } catch {
+      return null;
+    }
   }
 
   async function removeFileIfPresent(
@@ -359,6 +504,9 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       contentEncoding: "utf8",
       createParents: true,
     });
+    if (item.sent) {
+      await persistSentBatch(item);
+    }
     await bb.storage.kv.set(batchThreadKey(item.id), item.threadId);
     if (item.sent) {
       pending.delete(item.id);
@@ -463,6 +611,8 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       }
       return null;
     }
+    const sent = await loadSentBatch(batchId, expectedThreadId);
+    if (sent) return sent;
     try {
       const indexedThreadId = await bb.storage.kv.get<unknown>(batchThreadKey(batchId));
       if (typeof indexedThreadId !== "string" ||
@@ -489,58 +639,17 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         !Number.isFinite(raw.createdAt) ||
         typeof raw.sent !== "boolean"
       ) return null;
-      const batch = batchSchema.parse(raw.batch);
-      const images = Array.isArray(raw.images)
-        ? raw.images.flatMap((image) => {
-            const candidate = image as Record<string, unknown>;
-            if (
-              typeof image === "object" &&
-              image !== null &&
-              typeof candidate.annotationId === "string" &&
-              typeof candidate.version === "number" &&
-              Number.isInteger(candidate.version) &&
-              candidate.version > 0 &&
-              typeof candidate.path === "string" &&
-              isOwnedBatchImagePath(
-                location.storageRootPath,
-                batchId,
-                candidate.path,
-              )
-            ) {
-              return [candidate as { annotationId: string; version: number; path: string }];
-            }
-            return [];
-          })
-        : [];
-      const createdAt = raw.createdAt;
-      const sent = raw.sent;
-      const previewDataUrls = new Map<string, string>();
-      for (const image of images) {
-        try {
-          const preview = await bb.sdk.files.read({
-            hostId: location.hostId,
-            path: image.path,
-          });
-          if (preview.contentEncoding === "base64") {
-            previewDataUrls.set(
-              image.annotationId,
-              `data:${preview.mimeType ?? "image/jpeg"};base64,${preview.content}`,
-            );
-          }
-        } catch {
-          // The text context remains useful if an old image was removed externally.
-        }
-      }
-      const item: PendingBatch = {
-        id: batchId,
+      const item = await hydrateStoredBatch({
+        batchId,
         threadId,
-        createdAt,
-        sent,
-        batch,
-        images,
-        previewDataUrls,
-      };
-      if (!sent && createdAt < Date.now() - DRAFT_TTL_MS) {
+        location,
+        createdAt: raw.createdAt,
+        sent: raw.sent,
+        batch: raw.batch,
+        images: raw.images,
+      });
+      if (!item) return null;
+      if (!item.sent && item.createdAt < Date.now() - DRAFT_TTL_MS) {
         try {
           await removePersistedBatch(item);
         } catch (error) {
@@ -550,7 +659,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         }
         return null;
       }
-      if (!sent) pending.set(batchId, item);
+      if (!item.sent) pending.set(batchId, item);
       return item;
     } catch {
       return null;
@@ -995,14 +1104,6 @@ export default function browserAnnotate(bb: BbPluginApi): void {
   });
 
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
-    async getShortcut() {
-      return { shortcut: await bb.storage.kv.get<string>("annotationShortcut") ?? "Mod+Shift+A" };
-    },
-    async setShortcut({ shortcut }) {
-      await bb.storage.kv.set("annotationShortcut", shortcut);
-      bb.realtime.publish("shortcut-changed", {});
-      return { shortcut };
-    },
     async start({ threadId, tabId }) {
       const scope = await findScope(threadId, tabId);
       const previous = sessions.get(threadId);

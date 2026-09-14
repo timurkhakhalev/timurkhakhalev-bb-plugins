@@ -42,7 +42,7 @@ Browser toolbar action
   -> edit/delete actions update the same page overlay
   -> reload reinjects the picker from the persisted draft; hard and SPA navigation pause the previous page batch
   -> Send drains the capture queue and stores current-version screenshots in thread storage
-  -> batch metadata is persisted beside the screenshots for message hover details
+  -> batch metadata is persisted beside the screenshots and sent comments are mirrored in plugin KV for message hover details
   -> server sends one Browser comments mention to the current thread
   -> send resolves the mention
   -> agent-only text + labeled localImage inputs are appended to that turn
@@ -65,7 +65,7 @@ Browser toolbar action
 - Supports DOM elements in the top-level document. Cross-origin iframes, arbitrary regions, and virtual targets are not supported yet.
 - Up to 50 comments per batch.
 - Browser leases expire after 30 minutes.
-- Pending batches are stored in thread storage and indexed in plugin KV. They recover after page reloads and plugin restarts, and expire after 24 hours.
+- Pending batches are stored in thread storage and indexed in plugin KV. Sent comments are mirrored in plugin KV so their hover details survive thread-storage cleanup. Pending drafts recover after page reloads and plugin restarts, and expire after 24 hours.
 
 ## Verification
 
@@ -75,4 +75,4 @@ bun run check
 bb plugin build
 ```
 
-Until a compatible SDK is published, the plugin uses vendored declarations from `types/`. It requires BB and SDK releases that provide `experimental_browserToolbarAction` and mention-provider support for `experimental_images`. `bun run check:published-sdk` is a separate release gate that checks the installed npm SDK without path mapping. It is expected to fail until these APIs ship in a new `@get-bb/plugin-sdk` version. After publication, run `bb plugin migrate --yes`, then rerun this gate and `bb plugin build`.
+Until a compatible SDK is published, the plugin uses vendored declarations from `types/`. It requires a BB build that provides `experimental_browserToolbarAction` and mention-provider support for `experimental_images`; the current patched BB build reports SDK `0.4.88`. `bun run check:published-sdk` is a separate release gate that checks the installed npm SDK without path mapping. It is expected to fail until these APIs ship in a published `@get-bb/plugin-sdk` version. After publication, run `bb plugin migrate --yes`, then rerun this gate and `bb plugin build`.
