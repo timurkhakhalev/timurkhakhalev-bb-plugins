@@ -1,0 +1,12 @@
+{
+  "$schema": "https://getbb.app/schemas/plugins.schema.json",
+  "schemaVersion": 1,
+  "name": "timurkhakhalev-bb-plugins",
+  "plugins": [
+    {
+      "name": "browser-annotate",
+      "source": "./plugins/browser-annotate"
+    }
+  ]
+}
+

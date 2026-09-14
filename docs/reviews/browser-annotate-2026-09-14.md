@@ -1,0 +1,30 @@
+# Browser Annotate pre-release review
+
+Review captured before the regression suite and release-hardening changes. Items 2–9 were fixed in the imported plugin history. Item 1 remains an external release gate until BB publishes the companion SDK APIs.
+
+1. **Высокий: плагин не совместим с опубликованным SDK.**  
+   В SDK 0.4.88 отсутствует `experimental_browserToolbarAction`. Проверка с npm-declarations вместо локальных копий даёт две ошибки TypeScript; регистрация UI требует нашего companion-коммита BB. При этом manifest обещает совместимость с более старыми версиями. Нужно сначала обеспечить доступность API в релизе BB, затем указать реальную минимальную версию и проверять именно её. [app.tsx:1071](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/src/app.tsx:1071), [package.json:39](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/package.json:39).
+
+2. **Высокий: черновик считается отправленным до принятия сообщения.**  
+   `resolve()` устанавливает `sent = true`, сохраняет batch и запускает закрытие сессии. После этого BB ещё проверяет вложения, строит параметры запуска и сохраняет сообщение — эти этапы могут завершиться ошибкой. Воспроизведение подтвердило: после resolve черновика уже нет в `pending`, даже если отправка затем не состоялась. Нужно отделить разрешение контекста от подтверждения отправки. [server.ts:715](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/src/server.ts:715).
+
+3. **Высокий: очередь снимков может превысить лимит RPC и потерять результат.**  
+   Один ответ собирает до 50 JPEG и заранее снимает их с очереди. Лимит BB — 8 MiB. Воспроизведение с 50 снимками по 200 000 символов base64 дало ответ **10 005 576 байт**, при этом очередь повторной передачи уже пуста. Такой сценарий возникает при восстановлении batch или удалении комментария, когда снимки пересоздаются массово. Нужны ограниченные по размеру порции и подтверждение передачи перед окончательным удалением из очереди. [host.ts:992](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/src/host.ts:992).
+
+4. **Средний: редактор невозможно использовать для больших элементов.**  
+   Если элемент занимает viewport, места сверху и снизу нет. `placeEditor()` возвращает `maxHeight: 0` и координату за нижней границей. Для viewport 1000×700 воспроизвёл `top: 710`. Нужно размещать редактор внутри доступной области, допуская перекрытие элемента. [editor-placement.ts:13](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/src/editor-placement.ts:13).
+
+5. **Средний: CDP-сессия не переживает простой host worker.**  
+   Соединения сохраняются между RPC, но worker не удерживается через `experimental_retainWorker()`, а обработчика `dispose` нет. BB завершает неиспользуемый worker через пять минут. После переключения на другую задачу и остановки polling сервер сохраняет старый одноразовый endpoint, подключиться к которому заново нельзя. Нужно управлять временем жизни worker и восстанавливать соединение после его завершения. [host.ts:838](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/src/host.ts:838).
+
+6. **Средний: удаление batch не сохраняется окончательно.**  
+   `discard` удаляет объект из памяти и указатель черновика, но оставляет JSON и индекс `batch → thread`. Воспроизвёл: `discarded: true`, затем `resolve` того же ID успешно возвращает удалённые комментарии. Сохранившийся mention, например в другом окне, может снова их отправить. Нужны устойчивое состояние удаления либо удаление сохранённых данных и индекса. [server.ts:1140](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/src/server.ts:1140).
+
+7. **Средний: история отправленных аннотаций исчезает через 24 часа.**  
+   TTL применяется и к черновикам, и к отправленным batch. Проверка batch возрастом 25 часов возвращает пустой список, поэтому hover старого сообщения перестаёт показывать комментарии, хотя файлы остаются на диске. TTL черновиков нужно отделить от хранения истории сообщений. [server.ts:344](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/src/server.ts:344).
+
+8. **Средний: допустимые данные страницы могут аварийно завершить аннотирование.**  
+   Например, `document.title` передаётся без ограничения, а схема допускает максимум 500 символов. Аналогичная несогласованность есть у `classes`, `role` и selector. Ошибка разбора в `live` останавливает сессию. Нужно ограничивать необязательные текстовые поля при сборе evidence и отдельно обрабатывать слишком длинный selector. [host.ts:588](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/src/host.ts:588), [host.ts:436](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/src/host.ts:436).
+
+9. **Средний: извлечение текста удаляет букву `s`.**  
+   Внутри template literal выражение `\s` теряет обратную косую черту, поэтому браузер выполняет `/s+/g`. На реальном извлечённом скрипте воспроизвёл: `Some sample text` → `Some  ample text`. Это портит текст и описание выбранного элемента для агента. Нужно исправить экранирование и проверять выполнение скрипта. [host.ts:409](/Users/timurkhakhalev/dev/personal/bb-plugins/browser-annotate/src/host.ts:409).

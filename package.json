@@ -1,0 +1,10 @@
+{
+  "name": "timurkhakhalev-bb-plugins",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "bun --cwd plugins/browser-annotate run check",
+    "build": "bb plugin build plugins/browser-annotate"
+  }
+}
+
