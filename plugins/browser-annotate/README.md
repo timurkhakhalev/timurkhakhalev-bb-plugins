@@ -1,35 +1,35 @@
 # Browser Annotate
 
-Плагин переносит в BB основной сценарий Browser comments из Codex App: пользователь выбирает элементы страницы, оставляет комментарии, а затем отправляет их вместе со своим следующим сообщением.
+This plugin brings the core Browser comments workflow from Codex App to BB: users select page elements, leave comments, and send them with their next message.
 
-## Сценарий
+## Workflow
 
-1. Откройте страницу во встроенном Browser.
-2. Нажмите **Annotate** прямо в панели Browser рядом с адресной строкой.
-3. Выберите DOM-элемент — под Browser toolbar откроется компактный trusted editor. Напишите комментарий, при необходимости измените параметры в прокручиваемом списке категорий и сохраните.
-4. После каждого сохранения banner-плашка над полем composer сразу обновляет число и список аннотаций. Список раскрывается по наведению; из него можно изменить или удалить отдельный комментарий либо убрать весь batch.
-5. Повторите это для остальных элементов. Маркер на странице также можно открыть, чтобы изменить или удалить комментарий.
-6. Нажмите **Send** в компактной панели **Annotate Page**.
-7. Плагин сразу отправляет в текущий чат одно сообщение `N annotations` с полным контекстом и снимками. Live-плашка исчезает, а список отправленных аннотаций доступен по наведению на mention в истории.
+1. Open a page in the built-in Browser.
+2. Click **Annotate** in the Browser toolbar next to the address bar.
+3. Select a DOM element. A compact trusted editor opens below the Browser toolbar. Write a comment, adjust the options in the scrollable category list if needed, and save it.
+4. After every save, the banner above the composer immediately updates the annotation count and list. Hover over the list to edit or delete a comment, or discard the entire batch.
+5. Repeat for any other elements. You can also open a marker on the page to edit or delete its comment.
+6. Click **Send** in the compact **Annotate Page** panel.
+7. The plugin sends one `N annotations` message to the current chat with the full context and screenshots. The live banner disappears, and the sent annotations remain available by hovering over the mention in the chat history.
 
-`Escape` и повторное нажатие **Annotate** выключают picker, но сохраняют уже добавленные annotations в composer. Удаление mention из composer удаляет весь несохранённый batch.
+`Escape` and a second click on **Annotate** turn off the picker while preserving annotations already added to the composer. Removing the mention from the composer discards the entire unsent batch.
 
-## Что получает агент
+## Agent context
 
-При отправке mention разрешается в скрытые от пользователя agent-only inputs:
+When the mention is sent, it resolves into user-hidden, agent-only inputs containing:
 
-- блок `# Browser comments:` с отдельной секцией для каждого комментария;
-- URL и frame URL;
-- target, role, CSS selector и DOM path;
-- metadata атрибутов элемента;
-- координаты элемента и viewport;
-- immediate, nearby и selected text;
-- тема интерфейса в момент сохранения;
-- отдельный JPEG для каждого комментария, снятый сразу после сохранения выделения.
+- a `# Browser comments:` block with a separate section for each comment;
+- the page URL and frame URL;
+- the target, role, CSS selector, and DOM path;
+- element attribute metadata;
+- element and viewport coordinates;
+- immediate, nearby, and selected text;
+- the interface theme at the time of capture;
+- one JPEG per comment, captured immediately after the selection is saved.
 
-Текст и изображения страницы явно помечены как недоверенные page evidence. Страница отвечает только за selection outline, markers и design preview в CDP isolated world. Поле комментария, значения controls, Save и Send живут в renderer BB вне page webContents, поэтому страница не получает пользовательский ввод и не владеет send intent. Только подтверждённый в trusted editor комментарий считается пользовательской инструкцией.
+Page text and images are explicitly marked as untrusted page evidence. The page owns only the selection outline, markers, and design preview inside a CDP isolated world. The comment field, control values, Save, and Send live in the BB renderer outside the page webContents, so the page never receives user input or controls the send intent. Only a comment confirmed in the trusted editor counts as a user instruction.
 
-## Поток данных
+## Data flow
 
 ```text
 Browser toolbar action
@@ -48,26 +48,26 @@ Browser toolbar action
   -> agent-only text + labeled localImage inputs are appended to that turn
 ```
 
-`Send` вызывает `threads.send` в режиме `steer-if-active`: в свободном чате сообщение запускается сразу, а во время активной работы передаётся агенту как steering-сообщение. Модель, reasoning level и permission mode берутся из настроек текущего thread.
+`Send` calls `threads.send` in `steer-if-active` mode: an idle chat starts the message immediately, while an active run receives it as a steering message. The model, reasoning level, and permission mode come from the current thread settings.
 
-## Состав
+## Structure
 
-- `src/app.tsx` — кнопка в Browser toolbar и bridge в composer.
-- `src/server.ts` — Browser lease, pending batches, mention provider и thread storage.
-- `src/host.ts` — CDP-клиент, picker и снимки каждого сохранённого элемента.
-- `src/contracts.ts` — Zod-контракты frontend/server/host.
-- `src/server.test.ts` — проверки prompt-формата и входных границ.
-- Companion BB — Browser toolbar slot и image inputs для mention providers. Исходная реализация зафиксирована в companion-коммите `6855ecfb6` и должна войти в официальный релиз BB/SDK.
+- `src/app.tsx` — Browser toolbar action and composer bridge.
+- `src/server.ts` — Browser lease, pending batches, mention provider, and thread storage.
+- `src/host.ts` — CDP client, picker, and per-element screenshots.
+- `src/contracts.ts` — Zod contracts shared across the frontend, server, and host.
+- `src/server.test.ts` — prompt-format and input-boundary tests.
+- BB companion — Browser toolbar slot and image inputs for mention providers. The source implementation is recorded in companion commit `6855ecfb6` and must ship in an official BB/SDK release.
 
-## Ограничения
+## Limitations
 
-- Поддерживается desktop BB с нативным Browser.
-- Выбираются DOM-элементы верхнего документа; cross-origin iframe, произвольные области и virtual targets пока не поддержаны.
-- До 50 комментариев за batch.
-- Browser lease ограничен 30 минутами.
-- Pending batches сохраняются в thread storage и индексируются в plugin KV. Они восстанавливаются после reload страницы и перезапуска плагина и истекают через 24 часа.
+- Requires desktop BB with the native Browser.
+- Supports DOM elements in the top-level document. Cross-origin iframes, arbitrary regions, and virtual targets are not supported yet.
+- Up to 50 comments per batch.
+- Browser leases expire after 30 minutes.
+- Pending batches are stored in thread storage and indexed in plugin KV. They recover after page reloads and plugin restarts, and expire after 24 hours.
 
-## Проверка
+## Verification
 
 ```sh
 bun install
@@ -75,4 +75,4 @@ bun run check
 bb plugin build
 ```
 
-До публикации соответствующей версии SDK плагин использует vendored declarations в `types/`. Для работы нужны BB и SDK с `experimental_browserToolbarAction` и поддержкой `experimental_images` у mention provider. `bun run check:published-sdk` — отдельный release gate: он проверяет реальный установленный npm SDK без path mapping и сейчас ожидаемо блокируется, пока эти API не выйдут в новой версии `@get-bb/plugin-sdk`. После публикации выполните `bb plugin migrate --yes`, затем этот gate и `bb plugin build`.
+Until a compatible SDK is published, the plugin uses vendored declarations from `types/`. It requires BB and SDK releases that provide `experimental_browserToolbarAction` and mention-provider support for `experimental_images`. `bun run check:published-sdk` is a separate release gate that checks the installed npm SDK without path mapping. It is expected to fail until these APIs ship in a new `@get-bb/plugin-sdk` version. After publication, run `bb plugin migrate --yes`, then rerun this gate and `bb plugin build`.
