@@ -53,7 +53,7 @@
   },
   "engines": {
     "bb": ">=0.43",
-    "bbPluginSdk": ">=0.4.48"
+    "bbPluginSdk": ">=0.4.89"
   },
   "bb": {
     "name": "Browser Annotate",
