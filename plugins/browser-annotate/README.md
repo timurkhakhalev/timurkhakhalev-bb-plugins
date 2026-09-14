@@ -2,6 +2,10 @@
 
 This plugin brings the core Browser comments workflow from Codex App to BB: users select page elements, leave comments, and send them with their next message.
 
+## Demo
+
+https://github.com/user-attachments/assets/51067015-72bb-43c3-9459-a9c4a36ec2cd
+
 ## Workflow
 
 1. Open a page in the built-in Browser.
