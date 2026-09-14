@@ -75,6 +75,8 @@ export type FakeHostRpcState = {
   startRestored: boolean;
   failScreenshotWrites: number;
   readStatus?: "active" | "cancelled" | "missing" | "navigated";
+  cleanupDelay?: Promise<void>;
+  onCleanupStarted?: () => void;
 };
 
 type FakePluginHost = ReturnType<typeof createFakePluginHost>;
@@ -227,7 +229,11 @@ export function createServerHarness(
             captureFailed: state.captureFailed,
           };
         }
-        if (method === "cleanupSession") return { cleaned: true };
+        if (method === "cleanupSession") {
+          state.onCleanupStarted?.();
+          await state.cleanupDelay;
+          return { cleaned: true };
+        }
         if (method === "mutateSession") {
           const mutation = input as { annotationId?: unknown; action?: unknown };
           if (mutation.action === "delete" && state.batch && typeof mutation.annotationId === "string") {

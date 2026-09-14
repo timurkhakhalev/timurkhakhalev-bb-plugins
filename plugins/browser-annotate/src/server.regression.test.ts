@@ -99,6 +99,43 @@ describe("server browser annotation workflow", () => {
     ).toEqual({ active: false, tabId: null });
   });
 
+  test("live polling during explicit stop returns the preserved draft without an error", async () => {
+    let releaseCleanup!: () => void;
+    let markCleanupStarted!: () => void;
+    const cleanupDelay = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupStarted = new Promise<void>((resolve) => {
+      markCleanupStarted = resolve;
+    });
+    const harness = createServerHarness({
+      cleanupDelay,
+      onCleanupStarted: markCleanupStarted,
+    });
+    await startServer(harness);
+    await harness.harness.callRpc("live", {
+      threadId: TEST_THREAD_ID,
+      afterRevision: -1,
+    });
+
+    const stopping = harness.harness.callRpc("stop", {
+      threadId: TEST_THREAD_ID,
+    });
+    await cleanupStarted;
+    await expect(
+      harness.harness.callRpc("live", {
+        threadId: TEST_THREAD_ID,
+        afterRevision: 1,
+      }),
+    ).resolves.toMatchObject({
+      active: false,
+      annotations: [{ comment: "Keep this annotation." }],
+      batches: [{ count: 1 }],
+    });
+    releaseCleanup();
+    await expect(stopping).resolves.toEqual({ cancelled: true });
+  });
+
   test("normal send targets the current thread and keeps each annotation image association", async () => {
     const harness = createServerHarness({
       batch: makeBatch({

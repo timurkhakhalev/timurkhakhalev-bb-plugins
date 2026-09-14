@@ -23,6 +23,7 @@ export type PendingBatch = {
 type ActiveSession = {
   controller: AbortController;
   operationTail: Promise<void>;
+  stopping: boolean;
   tabId: string;
   hostId: string;
   scope: BrowserScope;
@@ -829,6 +830,14 @@ export default function browserAnnotate(bb: BbPluginApi): void {
   }
 
   async function stopSession(session: ActiveSession): Promise<void> {
+    if (session.stopping) {
+      await session.operationTail.catch(() => undefined);
+      return;
+    }
+    session.stopping = true;
+    if (sessions.get(session.scope.threadId) === session) {
+      sessions.delete(session.scope.threadId);
+    }
     if (session.leaseId && !session.controller.signal.aborted) {
       await runSessionOperation(session, () =>
         withSessionConnection(session, (wsEndpoint) =>
@@ -841,9 +850,6 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       ).catch(() => undefined);
     }
     await releaseSessionLease(session);
-    if (sessions.get(session.scope.threadId) === session) {
-      sessions.delete(session.scope.threadId);
-    }
     session.controller.abort();
   }
 
@@ -1006,6 +1012,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       const session: ActiveSession = {
         controller,
         operationTail: Promise.resolve(),
+        stopping: false,
         tabId,
         hostId: scope.hostId,
         scope,
@@ -1138,12 +1145,11 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     },
 
     async live({ threadId, afterRevision }) {
-      const session = sessions.get(threadId);
-      if (!session) {
+      const pausedState = async (revision: number) => {
         const paused = await latestPendingBatch(threadId);
         return {
           active: false,
-          revision: Math.max(0, afterRevision),
+          revision: Math.max(0, revision),
           batchId: paused?.id ?? null,
           annotations: paused
             ? paused.batch.annotations.map((annotation) => ({
@@ -1160,6 +1166,10 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           captureFailed: false,
           batches: await pendingSummaries(threadId),
         };
+      };
+      const session = sessions.get(threadId);
+      if (!session || session.stopping) {
+        return pausedState(afterRevision);
       }
       if (session.leaseId === null) {
         return {
@@ -1177,6 +1187,9 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       try {
         result = await refreshSession(session, afterRevision);
       } catch (error) {
+        if (session.stopping || sessions.get(threadId) !== session) {
+          return pausedState(afterRevision);
+        }
         bb.log.warn(
           `Could not read annotation session: ${error instanceof Error ? error.message : String(error)}`,
         );
