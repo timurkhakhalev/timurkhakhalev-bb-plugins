@@ -13,7 +13,8 @@
     "src/shortcut.ts",
     "scripts/check-published-sdk.mjs",
     "tsconfig.published-sdk.json",
-    "README.md"
+    "README.md",
+    "PLUGIN_OVERVIEW.md"
   ],
   "scripts": {
     "build": "bb plugin build",

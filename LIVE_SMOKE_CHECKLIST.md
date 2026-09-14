@@ -1,0 +1,13 @@
+# Browser Annotate live smoke checklist
+
+Run this in desktop BB with the native Browser, the plugin loaded, and a disposable page containing several visible controls/text elements. Keep one current thread open for the whole run.
+
+- [ ] **Toolbar.** Open the Browser tab and confirm the toolbar has **Annotate**. Click it; the button changes to **Annotating**, an **Annotate Page** bar appears below the Browser, and **Send** is disabled before a saved annotation.
+- [ ] **Selection/editor.** Select an element. Confirm the page highlight and trusted editor appear, enter a comment, click **Save**, and confirm a marker plus the annotation count. Select a second element and confirm both annotations remain.
+- [ ] **Reload.** With a saved draft present, reload the Browser page at the same URL, then run `bb plugin reload browser-annotate`. Reopen **Annotate** and confirm the draft, markers, comments, and screenshots return; the draft is not sent twice.
+- [ ] **Ordinary composer send.** Confirm the draft appears as a Browser comments mention in the composer. Add ordinary text and use the normal composer **Send**. Confirm one chat turn contains the resolved comments and per-element screenshots, the pending mention disappears, and the direct **Send** path is not duplicated.
+- [ ] **Direct Send.** Create a fresh annotation, wait until its screenshot is ready, and click **Send** in **Annotate Page**. Confirm one message is sent to the current thread, the live mention disappears, the session closes, and the sent item remains in history.
+- [ ] **Downstream failure retry.** Using a controlled desktop dev fault that fails downstream send once, click direct **Send**. Confirm an error is shown, the unsent draft and its mention remain, and the Browser lease is still usable. Restore the downstream path and click **Send** again; confirm exactly one successful message and cleanup.
+- [ ] **Multi-capture chunking.** On a fixture page with 50 selectable elements (or captures large enough to exercise the 8 MiB host-RPC boundary), save the batch. Confirm captures arrive in bounded chunks without a transport error, **Send** stays disabled while captures are pending, then all 50 annotations and their matching screenshots send.
+- [ ] **Cleanup/reopen.** Start a batch, save at least one annotation, press `Escape` or click **Annotating** to stop, and confirm the Browser overlay/lease is gone while the draft remains. Reopen **Annotate** on the same URL and confirm the draft can be continued or discarded.
+- [ ] **Hover sent history.** After a successful send, hover the Browser comments mention in thread history. Confirm the popover lists each target, comment, and screenshot, including a multi-annotation batch, without reopening the Browser picker.
