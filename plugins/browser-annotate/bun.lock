@@ -5,11 +5,11 @@
     "": {
       "name": "bb-plugin-browser-annotate",
       "dependencies": {
+        "@radix-ui/react-dialog": "^1.1.19",
         "zod": "^4.3.6",
       },
       "devDependencies": {
         "@get-bb/plugin-sdk": "0.4.88",
-        "@radix-ui/react-dialog": "^1.1.19",
         "@types/better-sqlite3": "^7.6.12",
         "@types/jsdom": "^27.0.0",
         "@types/node": "^22.0.0",
