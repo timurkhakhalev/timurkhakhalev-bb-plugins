@@ -20,15 +20,12 @@
     "src/editor-placement.ts",
     "src/host.ts",
     "src/server.ts",
-    "scripts/check-published-sdk.mjs",
-    "tsconfig.published-sdk.json",
     "README.md",
     "PLUGIN_OVERVIEW.md"
   ],
   "scripts": {
     "build": "bb plugin build",
     "check": "tsc --noEmit && tsc --project tsconfig.test.json --noEmit && bun test",
-    "check:published-sdk": "bun scripts/check-published-sdk.mjs && tsc --project tsconfig.published-sdk.json --noEmit",
     "test": "bun test",
     "typecheck:test": "tsc --project tsconfig.test.json --noEmit"
   },
@@ -37,7 +34,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.88",
+    "@get-bb/plugin-sdk": "0.5.9",
     "@types/better-sqlite3": "^7.6.12",
     "@types/jsdom": "^27.0.0",
     "@types/node": "^22.0.0",
@@ -51,8 +48,8 @@
     "typescript": "^5.7.0"
   },
   "engines": {
-    "bb": ">=0.43",
-    "bbPluginSdk": ">=0.4.88"
+    "bb": ">=0.43.4",
+    "bbPluginSdk": ">=0.5.9"
   },
   "bb": {
     "name": "Browser Annotate",

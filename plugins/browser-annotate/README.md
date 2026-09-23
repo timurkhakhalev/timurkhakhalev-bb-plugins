@@ -61,7 +61,7 @@ Browser toolbar action
 - `src/host.ts` — CDP client, picker, and per-element screenshots.
 - `src/contracts.ts` — Zod contracts shared across the frontend, server, and host.
 - `src/server.test.ts` — prompt-format and input-boundary tests.
-- BB companion — Browser toolbar slot and image inputs for mention providers. The source implementation is recorded in companion commit `6855ecfb6` and must ship in an official BB/SDK release.
+- BB 0.43.4 or newer — Browser toolbar slot and image inputs for mention providers, added in [get-bb/bb#3623](https://github.com/get-bb/bb/pull/3623).
 
 ## Limitations
 
@@ -79,4 +79,4 @@ bun run check
 bb plugin build
 ```
 
-Until a compatible SDK is published, the plugin uses vendored declarations from `types/`. It requires a BB build that provides `experimental_browserToolbarAction` and mention-provider support for `experimental_images`; the current patched BB build reports SDK `0.4.88`. `bun run check:published-sdk` is a separate release gate that checks the installed npm SDK without path mapping. It is expected to fail until these APIs ship in a published `@get-bb/plugin-sdk` version. After publication, run `bb plugin migrate --yes`, then rerun this gate and `bb plugin build`.
+The checks compile against the published `@get-bb/plugin-sdk@0.5.9`. Install from the [release tag](https://github.com/timurkhakhalev/timurkhakhalev-bb-plugins/tags) with `bb plugin install` and `--plugin browser-annotate`.

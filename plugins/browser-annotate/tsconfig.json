@@ -8,13 +8,7 @@
     "lib": ["ES2024", "DOM"],
     "types": ["node"],
     "noEmit": true,
-    "skipLibCheck": false,
-    "baseUrl": ".",
-    "paths": {
-      "@get-bb/plugin-sdk": ["types/bb-plugin-sdk.d.ts"],
-      "@get-bb/plugin-sdk/app": ["types/bb-plugin-sdk-app.d.ts"],
-      "@get-bb/plugin-sdk/host": ["types/bb-plugin-sdk.d.ts"]
-    }
+    "skipLibCheck": false
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts", "src/test-support.ts", "src/cdp-fixture.ts"]
