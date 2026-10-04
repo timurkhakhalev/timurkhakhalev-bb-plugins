@@ -529,6 +529,10 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       } catch {
         pending.set(item.id, item);
       }
+      // ponytail: once persisted as sent, a batch must never return to deletable-draft state; log loudly instead
+      bb.log.warn(
+        `Could not persist browser annotation batch as sent: ${error instanceof Error ? error.message : String(error)}`,
+      );
       throw error;
     }
   }
@@ -816,9 +820,11 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     const existing = pending.get(session.batchId);
     if (existing?.sent) return existing;
     if (batch.annotations.length === 0) {
-      pending.delete(session.batchId);
-      if (existing) await removePersistedBatch(existing);
-      else await clearBatchReferences(session.scope.threadId, session.batchId);
+      if (session.stagedRevision >= 0) {
+        pending.delete(session.batchId);
+        if (existing) await removePersistedBatch(existing);
+        else await clearBatchReferences(session.scope.threadId, session.batchId);
+      }
       return null;
     }
     const liveIds = new Set(batch.annotations.map((annotation) => annotation.id));
@@ -1072,8 +1078,11 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         const latest = await refreshSession(session, -1);
         if (!latest) throw new Error("Browser annotation session is not ready");
         if (latest.editor) throw new Error("Finish or cancel the open browser annotation first");
-        if (latest.batch) {
-          const latestItem = await stageBatch(session, latest.batch);
+      if (latest.batch) {
+        if (latest.batch.annotations.length === 0) {
+          throw new Error("Browser annotation session lost its annotations; try annotating again");
+        }
+        const latestItem = await stageBatch(session, latest.batch);
           if (!latestItem) throw new Error("Browser comments were removed before sending");
           item = latestItem;
           session.stagedRevision = Math.max(session.stagedRevision, latest.revision);
