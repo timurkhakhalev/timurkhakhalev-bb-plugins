@@ -214,7 +214,6 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       tabIds: [tabId],
       controllerLabel: "Browser Annotate",
       ttlMs: 30 * 60_000,
-      allowPersonal: true,
     });
     if (signal.aborted) {
       await desktop.releaseControl({ ...scope, leaseId: lease.leaseId }).catch(() => undefined);
