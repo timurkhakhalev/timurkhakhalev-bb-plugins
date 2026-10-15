@@ -73,6 +73,38 @@ async function closeSession(harness: HostHarness, fixture: CdpFixture): Promise<
 }
 
 describe("actual host entry and injected page script", () => {
+  test("acknowledged editor previews omit image bytes but refresh for a new design or client", async () => {
+    const fixture = new CdpFixture();
+    const harness = hostFor();
+    try {
+      await start(harness, fixture);
+      click(fixture.dom.window, "button");
+      const first = await read(harness, fixture) as { revision: number; editor: { id: string; previewKey: string; previewDataUrl: string } };
+      expect(first.editor.previewDataUrl).toContain("data:image/jpeg;base64,");
+      expect(first.editor.previewKey).toHaveLength(64);
+      const captures = fixture.screenshotCalls;
+      const repeat = await harness.experimental_call("readSession", {
+        wsEndpoint: fixture.endpoint, afterRevision: first.revision, knownPreviewKey: first.editor.previewKey,
+      });
+      expect(repeat).toMatchObject({ editor: { previewKey: first.editor.previewKey, previewDataUrl: null } });
+      expect(fixture.screenshotCalls).toBe(captures);
+      const freshClient = await read(harness, fixture);
+      expect(freshClient).toMatchObject({ editor: { previewDataUrl: first.editor.previewDataUrl } });
+      await harness.experimental_call("previewEditor", {
+        wsEndpoint: fixture.endpoint, editorId: first.editor.id, previewRevision: 1,
+        designChange: { text: null, declarations: [{ property: "color", previousValue: "", value: "red" }] },
+      });
+      const changed = await harness.experimental_call("readSession", {
+        wsEndpoint: fixture.endpoint, afterRevision: first.revision, knownPreviewKey: first.editor.previewKey,
+      }) as { editor: { previewKey: string; previewDataUrl: string } };
+      expect(changed.editor.previewKey).not.toBe(first.editor.previewKey);
+      expect(changed.editor.previewDataUrl).toContain("data:image/jpeg;base64,");
+      expect(fixture.screenshotCalls).toBe(captures + 1);
+    } finally {
+      await closeSession(harness, fixture);
+    }
+  });
+
   test("selection creates the trusted editor and save returns the complete comment batch", async () => {
     const fixture = new CdpFixture();
     const harness = hostFor();

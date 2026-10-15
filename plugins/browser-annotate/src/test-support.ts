@@ -74,6 +74,8 @@ export type FakeHostRpcState = {
   currentUrl: string;
   startRestored: boolean;
   failScreenshotWrites: number;
+  screenshotWriteDelay?: Promise<void>;
+  onScreenshotWrite?: () => void;
   readStatus?: "active" | "cancelled" | "missing" | "navigated";
   cleanupDelay?: Promise<void>;
   onCleanupStarted?: () => void;
@@ -163,6 +165,10 @@ export function createServerHarness(
         },
         files: {
           write: async (input: { path: string; content: string; contentEncoding?: "utf8" | "base64"; mimeType?: string }) => {
+            if (input.contentEncoding === "base64") {
+              state.onScreenshotWrite?.();
+              await state.screenshotWriteDelay;
+            }
             if (input.contentEncoding === "base64" && state.failScreenshotWrites > 0) {
               state.failScreenshotWrites -= 1;
               throw new Error("simulated screenshot write failure");

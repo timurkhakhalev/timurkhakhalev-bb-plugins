@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { batchSchema, editorDraftSchema, hostContract } from "./contracts.js";
@@ -491,6 +492,7 @@ const PAGE_SCRIPT = `
       comment: annotation ? annotation.comment : "",
       designChange: formDraft.designChange,
       previewDataUrl: null,
+      previewKey: null,
     };
     renderDesignPreview();
     hideHover();
@@ -1199,7 +1201,7 @@ export default experimental_defineHostEntry({
           captures,
         });
         if (value.editor) {
-          const key = JSON.stringify([value.editor.id, value.editor.designChange]);
+          const key = createHash("sha256").update(JSON.stringify([value.editor.id, value.editor.designChange])).digest("hex");
           let previewDataUrl = page.preview?.key === key ? page.preview.dataUrl : null;
           if (
             !previewDataUrl ||
@@ -1217,7 +1219,8 @@ export default experimental_defineHostEntry({
           } else {
             delete page.preview;
           }
-          const editor = { ...baseEditor!, previewDataUrl };
+          const editor = { ...baseEditor!, previewKey: previewDataUrl ? key : null,
+            previewDataUrl: input.knownPreviewKey === key ? null : previewDataUrl };
           if (!fitsHostResult(responseFor([], false, editor))) {
             throw new Error("Browser annotation response exceeds the host output limit");
           }

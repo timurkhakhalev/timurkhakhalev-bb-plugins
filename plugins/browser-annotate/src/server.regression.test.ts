@@ -30,6 +30,41 @@ describe("server browser annotation workflow", () => {
     await disposeServerHarnesses();
   });
 
+  test("save and concurrent live persist a screenshot only once", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const writing = new Promise<void>((resolve) => { started = resolve; });
+    let writes = 0;
+    const harness = createServerHarness({
+      screenshotWriteDelay: new Promise<void>((resolve) => { release = resolve; }),
+      onScreenshotWrite: () => { writes += 1; started(); },
+    });
+    await startServer(harness);
+    const save = harness.harness.callRpc("save", {
+      threadId: TEST_THREAD_ID, editorId: "editor-test", comment: "Saved once", designChange: null,
+    });
+    await writing;
+    let liveFinished = false;
+    const live = harness.harness.callRpc("live", { threadId: TEST_THREAD_ID, afterRevision: -1 })
+      .then((result) => { liveFinished = true; return result; });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(writes).toBe(1);
+      expect(liveFinished).toBe(false);
+      expect(harness.harness.realtimeSignals.filter((event) => event.channel === "annotate-pending")).toHaveLength(0);
+    } finally {
+      release();
+      await Promise.all([save, live]);
+    }
+    expect(writes).toBe(1);
+    expect(await save).toEqual({ saved: true });
+    expect(harness.harness.realtimeSignals).toContainEqual({ channel: "annotate-pending", payload: { threadId: TEST_THREAD_ID } });
+    const hostCalls = harness.harness.experimental_hostRpcCalls.length;
+    expect(await harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID }))
+      .toMatchObject({ batches: [{ count: 1 }] });
+    expect(harness.harness.experimental_hostRpcCalls).toHaveLength(hostCalls);
+  });
+
   test("registered RPC saves the complete batch and restores the draft after reload", async () => {
     const harness = createServerHarness();
     await startServer(harness);
@@ -40,7 +75,7 @@ describe("server browser annotation workflow", () => {
     }) as { annotations: Array<{ id: string; comment: string; previewDataUrl: string | null }> };
     expect(live.annotations).toHaveLength(1);
     expect(live.annotations[0]).toMatchObject({ id: "ann_test", comment: "Keep this annotation." });
-    expect(live.annotations[0].previewDataUrl).toContain("data:image/jpeg;base64,aGVsbG8=");
+    expect(live.annotations[0].previewDataUrl).toBeNull();
 
     const pending = await harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID }) as {
       batches: Array<{ id: string; count: number }>;
@@ -58,6 +93,7 @@ describe("server browser annotation workflow", () => {
       comment: "Keep this annotation.",
       designChange: { text: null, declarations: [] },
       previewDataUrl: null,
+      previewKey: null,
     };
     await expect(
       harness.harness.callRpc("save", {
@@ -221,7 +257,8 @@ describe("server browser annotation workflow", () => {
       afterRevision: failed.capturePending ? -1 : 0,
     }) as { capturePending: boolean; annotations: Array<{ previewDataUrl: string | null }> };
     expect(recovered.capturePending).toBe(false);
-    expect(recovered.annotations[0].previewDataUrl).toContain("cmVjb3ZlcmVk");
+    expect(recovered.annotations[0].previewDataUrl).toBeNull();
+    expect([...harness.files.values()].some((file) => file.content === "cmVjb3ZlcmVk")).toBe(true);
     await expect(
       harness.harness.callRpc("send", { threadId: TEST_THREAD_ID }),
     ).resolves.toEqual({ sent: true });
@@ -236,7 +273,7 @@ describe("server browser annotation workflow", () => {
       afterRevision: -1,
     }) as { capturePending: boolean; annotations: Array<{ previewDataUrl: string | null }> };
     expect(failed.capturePending).toBe(true);
-    expect(failed.annotations[0].previewDataUrl).toContain("aGVsbG8=");
+    expect(failed.annotations[0].previewDataUrl).toBeNull();
     expect([...harness.files.keys()].some((path) => path.endsWith(".jpg"))).toBe(false);
     await expect(
       harness.harness.callRpc("send", { threadId: TEST_THREAD_ID }),
@@ -281,6 +318,7 @@ describe("server browser annotation workflow", () => {
         comment: "",
         designChange: { text: null, declarations: [] },
         previewDataUrl: null,
+      previewKey: null,
       },
     });
     await startServer(harness);

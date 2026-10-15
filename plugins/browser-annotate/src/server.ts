@@ -475,11 +475,13 @@ export default function browserAnnotate(bb: BbPluginApi): void {
   async function clearDraftPointer(threadId: string, batchId?: string): Promise<void> {
     if (!batchId) {
       await bb.storage.kv.delete(draftBatchKey(threadId));
+      bb.realtime.publish("annotate-pending", { threadId });
       return;
     }
     const next = (await draftBatchIds(threadId)).filter((id) => id !== batchId);
     if (next.length === 0) await bb.storage.kv.delete(draftBatchKey(threadId));
     else await bb.storage.kv.set(draftBatchKey(threadId), next);
+    bb.realtime.publish("annotate-pending", { threadId });
   }
 
   async function clearBatchReferences(threadId: string, batchId: string): Promise<void> {
@@ -513,6 +515,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     } else {
       const ids = (await draftBatchIds(item.threadId)).filter((id) => id !== item.id);
       await bb.storage.kv.set(draftBatchKey(item.threadId), [...ids, item.id]);
+      bb.realtime.publish("annotate-pending", { threadId: item.threadId });
     }
   }
 
@@ -1004,12 +1007,12 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     );
   }
 
-  async function refreshSessionUnlocked(session: ActiveSession, afterRevision: number) {
+  async function refreshSessionUnlocked(session: ActiveSession, afterRevision: number, knownPreviewKey?: string | null) {
     if (!session.leaseId) return null;
     let result = await withSessionConnection(session, (wsEndpoint) =>
       host.call(
         "readSession",
-        { wsEndpoint, afterRevision },
+        { wsEndpoint, afterRevision, knownPreviewKey: knownPreviewKey ?? null },
         { hostId: session.hostId, timeoutMs: 30_000 },
       ),
     );
@@ -1049,8 +1052,8 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     return result;
   }
 
-  async function refreshSession(session: ActiveSession, afterRevision: number) {
-    return runSessionOperation(session, () => refreshSessionUnlocked(session, afterRevision));
+  async function refreshSession(session: ActiveSession, afterRevision: number, knownPreviewKey?: string | null) {
+    return runSessionOperation(session, () => refreshSessionUnlocked(session, afterRevision, knownPreviewKey));
   }
 
   bb.ui.registerMentionProvider({
@@ -1253,7 +1256,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       return { staged: true };
     },
 
-    async live({ threadId, afterRevision }) {
+    async live({ threadId, afterRevision, knownPreviewKey }) {
       const pausedState = async (revision: number) => {
         const paused = await latestPendingBatch(threadId);
         return {
@@ -1267,7 +1270,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
                 target: annotation.target,
                 comment: annotation.comment,
                 designChange: annotation.designChange,
-                previewDataUrl: paused.previewDataUrls.get(annotation.id) ?? null,
+                previewDataUrl: null,
               }))
             : [],
           editor: null,
@@ -1294,7 +1297,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       }
       let result;
       try {
-        result = await refreshSession(session, afterRevision);
+        result = await refreshSession(session, afterRevision, knownPreviewKey);
       } catch (error) {
         if (session.stopping || sessions.get(threadId) !== session) {
           return pausedState(afterRevision);
@@ -1326,7 +1329,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
                 target: annotation.target,
                 comment: annotation.comment,
                 designChange: annotation.designChange,
-                previewDataUrl: paused.previewDataUrls.get(annotation.id) ?? null,
+                previewDataUrl: null,
               }))
             : [],
           editor: null,
@@ -1370,7 +1373,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
           target: annotation.target,
           comment: annotation.comment,
           designChange: annotation.designChange,
-          previewDataUrl: item?.previewDataUrls.get(annotation.id) ?? null,
+          previewDataUrl: null,
         })),
         editor: result.editor,
         capturePending: item ? missingCaptureAnnotationIds(item).length > 0 : false,
@@ -1396,21 +1399,21 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     async save({ threadId, editorId, comment, designChange }) {
       const session = sessions.get(threadId);
       if (!session?.leaseId) return { saved: false };
-      const result = await runSessionOperation(session, () =>
-        withSessionConnection(session, (wsEndpoint) =>
+      return runSessionOperation(session, async () => {
+        const result = await withSessionConnection(session, (wsEndpoint) =>
           host.call(
             "saveEditor",
             { wsEndpoint, editorId, comment, designChange },
             { hostId: session.hostId, timeoutMs: 30_000 },
           ),
-        ),
-      );
-      if (!result.saved || !result.batch) return { saved: false };
-      applyCaptures(session, result.captures);
-      const item = await stageBatch(session, result.batch);
-      if (!item) return { saved: false };
-      session.stagedRevision = Math.max(session.stagedRevision, result.revision);
-      return { saved: true };
+        );
+        if (!result.saved || !result.batch) return { saved: false };
+        applyCaptures(session, result.captures);
+        const item = await stageBatch(session, result.batch);
+        if (!item) return { saved: false };
+        session.stagedRevision = Math.max(session.stagedRevision, result.revision);
+        return { saved: true };
+      });
     },
 
     async cancelEditor({ threadId, editorId }) {

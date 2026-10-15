@@ -129,6 +129,7 @@ export const editorDraftSchema = z
     comment: z.string().max(4000),
     designChange: designChangeSchema,
     previewDataUrl: z.string().max(12_000_000).nullable(),
+    previewKey: z.string().max(64).nullable(),
   })
   .strict();
 export type EditorDraft = z.infer<typeof editorDraftSchema>;
@@ -166,6 +167,7 @@ export const hostContract = {
       .object({
         wsEndpoint: z.string().url(),
         afterRevision: z.number().int().min(-1),
+        knownPreviewKey: z.string().max(64).nullable().optional(),
       })
       .strict(),
     output: z
@@ -291,6 +293,7 @@ export const rpcContract = {
       .object({
         threadId: idSchema,
         afterRevision: z.number().int().min(-1),
+        knownPreviewKey: z.string().max(64).nullable().optional(),
       })
       .strict(),
     output: z

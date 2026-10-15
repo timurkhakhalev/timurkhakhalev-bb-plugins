@@ -34,6 +34,7 @@ type LiveAnnotation = {
 };
 
 const composerDrafts = new Map<string, ComposerStructuredDraft>();
+const composerDraftListeners = new Set<(threadId: string) => void>();
 
 type DesktopBrowserVisibility = {
   setVisible(input: { tabId: string; visible: boolean }): void;
@@ -274,6 +275,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
   const showSessionError = (error: unknown, fallback: string) => setErrorMessage(error instanceof Error ? error.message : typeof error === "string" ? error : fallback);
   const [active, setActive] = useState(false);
   const [editor, setEditor] = useState<EditorDraft | null>(null);
+  const knownPreviewKeyRef = useRef<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const editorViewportRef = useRef<DOMRect | null>(null);
@@ -360,6 +362,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
     if (!active) {
       revisionRef.current = -1;
       editorIdRef.current = null;
+      knownPreviewKeyRef.current = null;
       setEditor(null);
       return;
     }
@@ -369,9 +372,10 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       if (disposed || running) return;
       running = true;
       try {
-        const live = await rpc.call("live", { threadId, afterRevision: revisionRef.current });
+        const live = await rpc.call("live", { threadId, afterRevision: revisionRef.current, knownPreviewKey: knownPreviewKeyRef.current });
         if (disposed) return;
         revisionRef.current = Math.max(revisionRef.current, live.revision);
+        knownPreviewKeyRef.current = live.editor?.previewKey ?? null;
         setAnnotationCount(live.annotations.length);
         setCapturePending(live.capturePending);
         setCaptureFailed(live.captureFailed);
@@ -383,10 +387,10 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
           setDesign(live.editor?.designChange ?? null);
           previewRevisionRef.current = 0;
           previewErrorRef.current = false;
-        } else if (live.editor) {
+        } else if (live.editor?.previewDataUrl) {
           const previewDataUrl = live.editor.previewDataUrl;
           setEditor((current) => current && current.previewDataUrl !== previewDataUrl
-            ? { ...current, previewDataUrl }
+            ? { ...current, previewDataUrl, previewKey: live.editor!.previewKey }
             : current);
         }
         if (!live.active) setActive(false);
@@ -428,7 +432,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       });
     }, 80);
     return () => window.clearTimeout(timer);
-  }, [active, design, editor, rpc, threadId]);
+  }, [active, design, editor?.id, rpc, threadId]);
 
   useRealtime(
     "annotate-session",
@@ -476,6 +480,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       });
       if (!result.saved) throw new Error("The selected element is no longer available");
       editorIdRef.current = null;
+      knownPreviewKeyRef.current = null;
       setEditor(null);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not save annotation");
@@ -489,6 +494,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
     try {
       await rpc.call("cancelEditor", { threadId, editorId: editor.id });
       editorIdRef.current = null;
+      knownPreviewKeyRef.current = null;
       setEditor(null);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not close annotation editor");
@@ -506,6 +512,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       });
       if (!result.changed) throw new Error("The annotation is no longer available");
       editorIdRef.current = null;
+      knownPreviewKeyRef.current = null;
       setEditor(null);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not delete annotation");
@@ -684,7 +691,7 @@ function useBrowserAnnotationsComposerSync() {
   const composer = useComposer();
   const connectionState = useRealtimeConnectionState();
   const composerRef = useRef(composer);
-  const revisionRef = useRef(-1);
+  const [pendingRevision, setPendingRevision] = useState(0);
   const requestedMentionsRef = useRef(new Map<string, string>());
   const observedMentionsRef = useRef(new Set<string>());
   const pollErrorRef = useRef(false);
@@ -702,7 +709,6 @@ function useBrowserAnnotationsComposerSync() {
   }, [threadId]);
 
   useEffect(() => {
-    revisionRef.current = -1;
     requestedMentionsRef.current = new Map();
     observedMentionsRef.current = new Set();
     pollErrorRef.current = false;
@@ -712,16 +718,14 @@ function useBrowserAnnotationsComposerSync() {
     if (!threadId) return;
     let disposed = false;
     let running = false;
+    let requested = false;
     const poll = async () => {
-      if (running || disposed) return;
+      if (disposed) return;
+      if (running) { requested = true; return; }
       running = true;
       try {
-        const live = await rpc.call("live", {
-          threadId,
-          afterRevision: revisionRef.current,
-        });
+        const live = await rpc.call("pending", { threadId });
         if (disposed) return;
-        revisionRef.current = Math.max(revisionRef.current, live.revision);
 
         if (!composerDraftReady.has(threadId)) return;
         const mentions = browserMentions(threadId);
@@ -754,15 +758,23 @@ function useBrowserAnnotationsComposerSync() {
         }
       } finally {
         running = false;
+        if (requested && !disposed) { requested = false; void poll(); }
       }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 250);
+    const onDraft = (id: string) => { if (id === threadId) void poll(); };
+    composerDraftListeners.add(onDraft);
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      composerDraftListeners.delete(onDraft);
     };
-  }, [connectionState, detach, rpc, threadId]);
+  }, [connectionState, detach, rpc, threadId, pendingRevision]);
+
+  useRealtime("annotate-pending", useCallback((rawPayload) => {
+    if ((rawPayload as { threadId?: string }).threadId === threadId) {
+      setPendingRevision((revision) => revision + 1);
+    }
+  }, [threadId]));
 
   useRealtime(
     "annotate-session",
@@ -1015,8 +1027,12 @@ export default definePluginApp((app) => {
     richText: {
       onDraftChange(draft: ComposerStructuredDraft, view: ComposerView) {
         if (view.scope.kind === "thread") {
+          const previous = composerDrafts.get(view.scope.threadId);
           composerDrafts.set(view.scope.threadId, draft);
           composerDraftReady.add(view.scope.threadId);
+          if (!previous || JSON.stringify(previous.mentions) !== JSON.stringify(draft.mentions)) {
+            for (const listener of composerDraftListeners) listener(view.scope.threadId);
+          }
         }
       },
     },
