@@ -199,7 +199,15 @@ function DesignEditor({
                     className="grid min-h-8 grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] items-center gap-2 text-xs"
                   >
                     <span className="truncate text-muted-foreground">{designLabels[property]}</span>
-                    {colorProperties.has(property) ? (
+                    {property === "text" ? (
+                      <textarea
+                        value={value}
+                        rows={1}
+                        maxLength={4000}
+                        className="min-w-0 resize-none overflow-x-hidden overflow-y-auto whitespace-pre rounded-md border border-border bg-transparent px-2 py-1 leading-4 text-foreground [field-sizing:content] [block-size:1.75rem] [min-block-size:1.75rem] [max-block-size:1.75rem] focus:whitespace-pre-wrap focus:[overflow-wrap:anywhere] focus:[block-size:auto] focus:[max-block-size:calc(3lh+0.5rem+2px)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+                        onChange={(event) => setValue(event.target.value)}
+                      />
+                    ) : colorProperties.has(property) ? (
                       <span className="grid grid-cols-[2rem_minmax(0,1fr)] gap-1.5">
                         <input
                           type="color"
@@ -258,6 +266,16 @@ function findBrowserNavigation(element: Element | null): Element | null {
   return null;
 }
 
+function LoadingLabel({ children }: { children: React.ReactNode }) {
+  return <span role="status" className="inline-flex items-center gap-1.5">
+    <svg aria-hidden viewBox="0 0 16 16" className="size-3.5 shrink-0 motion-safe:animate-spin" fill="none">
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+      <path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+    {children}
+  </span>;
+}
+
 function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToolbarActionProps) {
   const tooltipId = useId();
   const commentRef = useRef<HTMLTextAreaElement | null>(null);
@@ -270,7 +288,9 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
   const previewRevisionRef = useRef(0);
   const pollErrorRef = useRef(false);
   const previewErrorRef = useRef(false);
-  const [busy, setBusy] = useState(false);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const busy = pendingAction !== null;
+  const [syncing, setSyncing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const showSessionError = (error: unknown, fallback: string) => setErrorMessage(error instanceof Error ? error.message : typeof error === "string" ? error : fallback);
   const [active, setActive] = useState(false);
@@ -332,7 +352,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       const liveBounds = viewport.getBoundingClientRect();
       const bounds = liveBounds.height > 0 ? liveBounds : editorViewportRef.current;
       if (!bounds) return;
-      const placement = placeEditor(bounds, editor.viewport, editor.rect, expanded);
+      const placement = placeEditor(bounds, editor.viewport, editor.rect, expanded, window.innerHeight);
       setEditorStyle(placement.popup);
       setSelectionStyle(placement.target);
       setPageStyle({ left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height });
@@ -360,6 +380,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
 
   useEffect(() => {
     if (!active) {
+      setSyncing(false);
       revisionRef.current = -1;
       editorIdRef.current = null;
       knownPreviewKeyRef.current = null;
@@ -371,6 +392,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
     const poll = async () => {
       if (disposed || running) return;
       running = true;
+      const progressTimer = window.setTimeout(() => { if (!disposed) setSyncing(true); }, 750);
       try {
         const live = await rpc.call("live", { threadId, afterRevision: revisionRef.current, knownPreviewKey: knownPreviewKeyRef.current });
         if (disposed) return;
@@ -402,6 +424,8 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
           showSessionError(error, "Could not read annotation state");
         }
       } finally {
+        window.clearTimeout(progressTimer);
+        if (!disposed) setSyncing(false);
         running = false;
       }
     };
@@ -450,7 +474,8 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
   );
 
   const toggle = useCallback(async () => {
-    setBusy(true);
+    if (busy) return;
+    setPendingAction(active ? "Stopping…" : "Starting…");
     try {
       if (active) {
         await rpc.call("stop", { threadId });
@@ -463,14 +488,14 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
-  }, [active, rpc, tabId, threadId]);
+  }, [active, busy, rpc, tabId, threadId]);
 
   const saveEditor = useCallback(async () => {
-    if (!editor || !design) return;
+    if (!editor || !design || busy) return;
     setErrorMessage(null);
-    setBusy(true);
+    setPendingAction("Saving…");
     try {
       const result = await rpc.call("save", {
         threadId,
@@ -485,12 +510,13 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not save annotation");
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
-  }, [comment, design, editor, rpc, threadId]);
+  }, [busy, comment, design, editor, rpc, threadId]);
 
   const cancelEditor = useCallback(async () => {
-    if (!editor) return;
+    if (!editor || busy) return;
+    setPendingAction("Closing…");
     try {
       await rpc.call("cancelEditor", { threadId, editorId: editor.id });
       editorIdRef.current = null;
@@ -498,12 +524,14 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
       setEditor(null);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not close annotation editor");
+    } finally {
+      setPendingAction(null);
     }
-  }, [editor, rpc, threadId]);
+  }, [busy, editor, rpc, threadId]);
 
   const deleteEditor = useCallback(async () => {
-    if (!editor?.annotationId) return;
-    setBusy(true);
+    if (!editor?.annotationId || busy) return;
+    setPendingAction("Deleting…");
     try {
       const result = await rpc.call("mutate", {
         threadId,
@@ -517,25 +545,26 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not delete annotation");
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
-  }, [editor, rpc, threadId]);
+  }, [busy, editor, rpc, threadId]);
 
   const send = useCallback(async () => {
-    setBusy(true);
+    if (busy) return;
+    setPendingAction("Sending…");
     try {
       const result = await rpc.call("send", { threadId });
       if (!result.sent) throw new Error("Finish the current annotation before sending");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not send annotations");
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
-  }, [rpc, threadId]);
+  }, [busy, rpc, threadId]);
 
   const designChanged = design ? changedDesign(design) : null;
   const canSave = Boolean(editor && (comment.trim().length > 0 || designChanged));
-  const actionLabel = active ? "Stop annotation mode" : "Start annotation mode";
+  const actionLabel = pendingAction ?? (active ? "Stop annotation mode" : "Start annotation mode");
 
   return (
     <>
@@ -547,11 +576,14 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
           aria-label={actionLabel}
           aria-describedby={tooltipId}
           aria-pressed={active}
+          aria-busy={busy}
           disabled={busy}
           onClick={() => void toggle()}
         >
-          {annotateIcon}
-          <span className="hidden xl:inline">{active ? "Annotating" : "Annotate"}</span>
+          {busy ? <LoadingLabel><span className="hidden xl:inline">{pendingAction}</span></LoadingLabel> : <>
+            {annotateIcon}
+            <span className="hidden xl:inline">{active ? "Annotating" : "Annotate"}</span>
+          </>}
         </button>
         <span
           id={tooltipId}
@@ -573,6 +605,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
         <div data-bb-plugin-root="" data-bb-plugin="browser-annotate" className="flex justify-center border-b border-border bg-background px-3 py-1">
           <div className="flex h-9 items-center gap-3 text-foreground">
             <span className="text-sm font-semibold tracking-[-0.01em]">Annotate Page</span>
+            {syncing && !busy ? <span className="text-xs text-muted-foreground"><LoadingLabel>Syncing…</LoadingLabel></span> : null}
             <button
               type="button"
               className="h-8 min-w-[4.5rem] rounded-lg bg-blue-500 px-3.5 text-sm font-semibold text-white transition-colors hover:bg-blue-400 active:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/35"
@@ -580,7 +613,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
               title={captureFailed ? "Screenshot failed; retrying automatically" : undefined}
               onClick={() => void send()}
             >
-              Send
+              {pendingAction === "Sending…" ? <LoadingLabel>Sending…</LoadingLabel> : capturePending ? <LoadingLabel>Capturing…</LoadingLabel> : "Send"}
             </button>
           </div>
           {editor && design && previewReadyId === editor.id ? (
@@ -592,6 +625,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
               data-bb-plugin="browser-annotate"
               aria-label={`Annotate ${editor.target}`}
               aria-describedby={undefined}
+              aria-busy={busy}
               onOpenAutoFocus={(event) => {
                 event.preventDefault();
                 const input = commentRef.current;
@@ -608,12 +642,13 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
             >
               <Dialog.Title className="sr-only">Annotate {editor.target}</Dialog.Title>
               <div className={`flex shrink-0 items-center gap-2 px-2 py-1.5 ${expanded ? "border-b border-border" : ""}`}>
-                <button type="button" aria-label={expanded ? "Hide element settings" : "Show element settings"} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)} className="flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-state-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
+                <button type="button" aria-label={expanded ? "Hide element settings" : "Show element settings"} aria-expanded={expanded} disabled={busy} onClick={() => setExpanded((value) => !value)} className="flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-state-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
                   <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="size-4"><path d="M3 6h8m4 0h6M3 12h3m4 0h11M3 18h11m4 0h3"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg>
                 </button>
                 <textarea
                   ref={commentRef}
                   value={comment}
+                  disabled={busy}
                   maxLength={4000}
                   rows={1}
                   placeholder={expanded ? "Describe these changes…" : "Add a comment…"}
@@ -629,11 +664,14 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
                     }
                   }}
                 />
-                {!expanded && canSave ? <button type="button" disabled={busy} onClick={() => void saveEditor()} className="h-8 shrink-0 rounded-full px-2 text-xs text-foreground hover:bg-state-hover">Save</button> : null}
+                {!expanded && pendingAction === "Closing…" ? <span className="shrink-0 text-xs text-muted-foreground"><LoadingLabel>Closing…</LoadingLabel></span> : null}
+                {!expanded && canSave ? <button type="button" disabled={busy} onClick={() => void saveEditor()} className="h-8 shrink-0 rounded-full px-2 text-xs text-foreground hover:bg-state-hover">{pendingAction === "Saving…" ? <LoadingLabel>Saving…</LoadingLabel> : "Save"}</button> : null}
               </div>
               {expanded ? <>
                 <div className="shrink-0 border-b border-border px-3 py-2 text-xs text-muted-foreground">&lt;{editor.tag}&gt;</div>
-                <DesignEditor design={design} onChange={setDesign} />
+                <fieldset disabled={busy} className="min-h-0 min-w-0 border-0 p-0">
+                  <DesignEditor design={design} onChange={setDesign} />
+                </fieldset>
               </> : null}
               {errorMessage ? <p role="status" className="px-3 py-1 text-xs text-destructive">{errorMessage}</p> : null}
               {expanded ? <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border bg-popover px-3 py-2">
@@ -644,7 +682,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
                     disabled={busy}
                     onClick={() => void deleteEditor()}
                   >
-                    Delete
+                    {pendingAction === "Deleting…" ? <LoadingLabel>Deleting…</LoadingLabel> : "Delete"}
                   </button>
                 ) : null}
                 <button
@@ -653,7 +691,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
                   disabled={busy}
                   onClick={() => void cancelEditor()}
                 >
-                  Cancel
+                  {pendingAction === "Closing…" ? <LoadingLabel>Closing…</LoadingLabel> : "Cancel"}
                 </button>
                 <button
                   type="button"
@@ -661,7 +699,7 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
                   disabled={busy || !canSave}
                   onClick={() => void saveEditor()}
                 >
-                  Save
+                  {pendingAction === "Saving…" ? <LoadingLabel>Saving…</LoadingLabel> : "Save"}
                 </button>
               </div> : null}
             </Dialog.Content>
@@ -829,6 +867,7 @@ function SentAnnotationsHover() {
   const [batchId, setBatchId] = useState<string | null>(null);
   const [editable, setEditable] = useState(false);
   const [annotations, setAnnotations] = useState<LiveAnnotation[]>([]);
+  const [loading, setLoading] = useState(false);
   const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({});
 
   const cancelClose = useCallback(() => {
@@ -865,6 +904,7 @@ function SentAnnotationsHover() {
     const enter = (event: MouseEvent) => {
       const match = batchIdFor(event.target);
       if (!match) return;
+      if (event.relatedTarget instanceof Node && match.pill.contains(event.relatedTarget)) return;
       cancelClose();
       const rect = match.pill.getBoundingClientRect();
       const viewportGutter = 12;
@@ -884,13 +924,18 @@ function SentAnnotationsHover() {
       const request = ++requestRef.current;
       if (!threadId) return;
       setBatchId(match.batchId);
+      setAnnotations([]);
+      setErrorMessage(null);
+      setLoading(true);
       void rpc.call("batch", { threadId, batchId: match.batchId }).then((result) => {
         if (request === requestRef.current) {
+          setLoading(false);
           setEditable(result.editable);
           setAnnotations(result.annotations);
         }
       }).catch((error) => {
         if (request === requestRef.current) {
+          setLoading(false);
           setErrorMessage(error instanceof Error ? error.message : "Could not load annotations");
         }
       });
@@ -951,7 +996,7 @@ function SentAnnotationsHover() {
   );
 
   if (!anchor) return syncError ? <span role="status" className="text-xs text-destructive">{syncError}</span> : null;
-  if (annotations.length === 0 && !errorMessage) return null;
+  if (annotations.length === 0 && !errorMessage && !loading) return null;
   return createPortal(
     <div
       data-browser-annotations-popover=""
@@ -963,6 +1008,7 @@ function SentAnnotationsHover() {
       onMouseEnter={cancelClose}
       onMouseLeave={closeSoon}
     >
+      {loading ? <p className="p-2 text-xs text-muted-foreground"><LoadingLabel>Loading annotations…</LoadingLabel></p> : null}
       {errorMessage ? <p role="status" className="p-2 text-xs text-destructive">{errorMessage}</p> : null}
       {annotations.map((annotation, index) => (
         <div key={annotation.id} className="border-b border-border p-2 last:border-b-0">

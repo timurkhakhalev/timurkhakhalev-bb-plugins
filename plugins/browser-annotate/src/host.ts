@@ -58,6 +58,10 @@ const PAGE_SCRIPT = `
     "#__bbAnnTip b{color:#fff}" +
     "#__bbAnnTip .dim{color:#9aa0ad}" +
     "#__bbAnnBox{position:fixed;z-index:2147483644;pointer-events:none;display:none;border:2px solid #3b82f6;background:rgba(59,130,246,.12);border-radius:4px}" +
+    "#__bbAnnLoading{position:fixed;inset-block-start:12px;inset-inline-end:12px;display:none;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;background:rgba(20,22,28,.96);color:#e8eaf0;font:12px/1.6 -apple-system,Segoe UI,Roboto,sans-serif}" +
+    ":host([data-capturing]) #__bbAnnLoading{visibility:hidden}" +
+    "#__bbAnnLoading:before{content:'';width:12px;height:12px;border:2px solid currentColor;border-inline-end-color:transparent;border-radius:50%}" +
+    "@keyframes bbAnnSpin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:no-preference){#__bbAnnLoading:before{animation:bbAnnSpin .8s linear infinite}}" +
     ".__bbAnnOutline{position:fixed;z-index:2147483643;pointer-events:none;border:2px solid #3b82f6;background:rgba(59,130,246,.08);border-radius:4px}" +
     ".__bbAnnPin{position:fixed;z-index:2147483645;pointer-events:auto;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;" +
     "background:#3b82f6;color:#fff;font:700 12px/22px -apple-system,Segoe UI,Roboto,sans-serif;text-align:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4)}";
@@ -79,6 +83,9 @@ const PAGE_SCRIPT = `
 
   const tip = el("__bbAnnTip");
   const box = el("__bbAnnBox");
+  const loading = el("__bbAnnLoading");
+  loading.setAttribute("role", "status");
+  loading.textContent = "Opening editor…";
 
   let formTarget = null; // element being annotated, or the annotation being edited
   let formAnnotation = null;
@@ -406,6 +413,8 @@ const PAGE_SCRIPT = `
     formDraft = null;
     formPendingItem = null;
     state.editor = null;
+    rootHost.removeAttribute("data-editor-loading");
+    loading.style.display = "none";
     state.editorPreviewRevision = 0;
     renderDesignPreview();
   };
@@ -494,6 +503,8 @@ const PAGE_SCRIPT = `
       previewDataUrl: null,
       previewKey: null,
     };
+    rootHost.setAttribute("data-editor-loading", "");
+    loading.style.display = "flex";
     renderDesignPreview();
     hideHover();
     return true;
@@ -1004,21 +1015,28 @@ async function screenshot(
       scale: options.scale,
     };
   }
-  const data = z
-    .object({ data: z.string() })
-    .parse(
-      await connection.request(
-        "Page.captureScreenshot",
-        captureParams,
-        sessionId,
-      ),
-    ).data;
-  return {
-    base64: data,
-    width: Math.max(1, Math.round(viewport.width * dpr * options.scale)),
-    height: Math.max(1, Math.round(viewport.height * dpr * options.scale)),
-    mimeType: "image/jpeg" as const,
-  };
+  await evaluate(connection, sessionId, contextId,
+    'document.getElementById("__bbAnnRoot")?.setAttribute("data-capturing", ""); true');
+  try {
+    const data = z
+      .object({ data: z.string() })
+      .parse(
+        await connection.request(
+          "Page.captureScreenshot",
+          captureParams,
+          sessionId,
+        ),
+      ).data;
+    return {
+      base64: data,
+      width: Math.max(1, Math.round(viewport.width * dpr * options.scale)),
+      height: Math.max(1, Math.round(viewport.height * dpr * options.scale)),
+      mimeType: "image/jpeg" as const,
+    };
+  } finally {
+    await evaluate(connection, sessionId, contextId,
+      'document.getElementById("__bbAnnRoot")?.removeAttribute("data-capturing"); true').catch(() => undefined);
+  }
 }
 
 type HostCaptureImage = Awaited<ReturnType<typeof screenshot>>;

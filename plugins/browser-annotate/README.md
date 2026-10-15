@@ -10,8 +10,8 @@ https://github.com/user-attachments/assets/51067015-72bb-43c3-9459-a9c4a36ec2cd
 
 1. Open a page in the built-in Browser.
 2. Click **Annotate** in the Browser toolbar next to the address bar.
-3. Select a DOM element. A compact trusted editor opens below the Browser toolbar. Write a comment, adjust the options in the scrollable category list if needed, and save it.
-4. After every save, the banner above the composer immediately updates the annotation count and list. Hover over the list to edit or delete a comment, or discard the entire batch.
+3. Select a DOM element. A loading indicator appears immediately while the trusted editor opens. Write a comment, adjust the options in the scrollable category list if needed, and save it. The Text field expands to up to three lines on focus; expanded settings can extend above the Browser into the BB window.
+4. After every save, the composer receives an annotation mention through change events. Hover over it to review, edit, or delete a comment. Progress indicators show when saving, closing, deleting, sending, or loading details is pending.
 5. Repeat for any other elements. You can also open a marker on the page to edit or delete its comment.
 6. Click **Send** in the compact **Annotate Page** panel.
 7. The plugin sends one `N annotations` message to the current chat with the full context and screenshots. The live banner disappears, and the sent annotations remain available by hovering over the mention in the chat history.
@@ -42,7 +42,7 @@ Browser toolbar action
   -> the page supplies untrusted element evidence to a trusted BB editor
   -> Save commits through server RPC and persists before the UI confirms success
   -> every saved or edited comment queues a versioned CDP screenshot
-  -> composer polls the live revision and renders the current annotation list
+  -> composer refreshes saved annotation mentions on change events; only the active editor polls live state
   -> edit/delete actions update the same page overlay
   -> reload reinjects the picker from the persisted draft; hard and SPA navigation pause the previous page batch
   -> Send drains the capture queue and stores current-version screenshots in thread storage

@@ -105,6 +105,31 @@ describe("actual host entry and injected page script", () => {
     }
   });
 
+  test("selection immediately shows loading, excludes it from screenshots and clears it on cancel", async () => {
+    const fixture = new CdpFixture();
+    const harness = hostFor();
+    try {
+      await start(harness, fixture);
+      click(fixture.dom.window, "button");
+      const root = fixture.dom.window.document.getElementById("__bbAnnRoot")!;
+      expect(root.hasAttribute("data-editor-loading")).toBe(true);
+      const opened = await read(harness, fixture) as { editor: { id: string } };
+      expect(fixture.screenshotLoadingStates).toEqual([{ loading: true, capturing: true }]);
+      expect(root.hasAttribute("data-capturing")).toBe(false);
+      fixture.setScreenshotFailures(1);
+      await harness.experimental_call("previewEditor", {
+        wsEndpoint: fixture.endpoint, editorId: opened.editor.id, previewRevision: 1,
+        designChange: { text: { previousValue: "Continue", value: "Changed" }, declarations: [] },
+      });
+      await read(harness, fixture);
+      expect(root.hasAttribute("data-capturing")).toBe(false);
+      await harness.experimental_call("cancelEditor", { wsEndpoint: fixture.endpoint, editorId: opened.editor.id });
+      expect(root.hasAttribute("data-editor-loading")).toBe(false);
+    } finally {
+      await closeSession(harness, fixture);
+    }
+  });
+
   test("selection creates the trusted editor and save returns the complete comment batch", async () => {
     const fixture = new CdpFixture();
     const harness = hostFor();

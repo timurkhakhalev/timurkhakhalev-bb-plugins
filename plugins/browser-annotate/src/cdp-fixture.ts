@@ -28,6 +28,7 @@ export class CdpFixture {
   readonly url: string;
   readonly endpoint: string;
   screenshotCalls = 0;
+  screenshotLoadingStates: Array<{ loading: boolean; capturing: boolean }> = [];
   activeConnections = 0;
   closedConnections = 0;
   private readonly idleWaiters = new Set<() => void>();
@@ -187,6 +188,8 @@ export class CdpFixture {
         return {};
       case "Page.captureScreenshot": {
         this.screenshotCalls += 1;
+        const root = this.dom.window.document.getElementById("__bbAnnRoot");
+        this.screenshotLoadingStates.push({ loading: root?.hasAttribute("data-editor-loading") ?? false, capturing: root?.hasAttribute("data-capturing") ?? false });
         if ((this.options.failScreenshots ?? 0) >= this.screenshotCalls) {
           throw new Error("fixture screenshot failure");
         }

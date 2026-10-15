@@ -6,14 +6,14 @@ Public collection of plugins for [BB](https://github.com/get-bb/bb).
 
 | Plugin | Description | Status |
 | --- | --- | --- |
-| [Browser Annotate](./plugins/browser-annotate) | Add comments to elements in a native BB Browser tab and send them with screenshots to the current chat. | 0.1.0 |
+| [Browser Annotate](./plugins/browser-annotate) | Add comments to elements in a native BB Browser tab and send them with screenshots to the current chat. | 0.1.1 |
 
 ## Install
 
 Install a plugin from this repository by its collection name:
 
 ```sh
-bb plugin install git:github.com/timurkhakhalev/timurkhakhalev-bb-plugins@browser-annotate/v0.1.0 --plugin browser-annotate
+bb plugin install git:github.com/timurkhakhalev/timurkhakhalev-bb-plugins@browser-annotate/v0.1.1 --plugin browser-annotate
 ```
 
 For local development:

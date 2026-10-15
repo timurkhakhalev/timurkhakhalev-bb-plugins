@@ -1,6 +1,6 @@
 type Rect = { x: number; y: number; width: number; height: number };
 
-export function placeEditor(bounds: Rect, page: { width: number; height: number }, rect: Rect, expanded: boolean) {
+export function placeEditor(bounds: Rect, page: { width: number; height: number }, rect: Rect, expanded: boolean, windowHeight: number) {
   const scaleX = bounds.width / page.width;
   const scaleY = bounds.height / page.height;
   const target = {
@@ -11,9 +11,12 @@ export function placeEditor(bounds: Rect, page: { width: number; height: number 
   };
   const gap = 10;
   const boundsBottom = bounds.y + Math.max(0, bounds.height);
-  const availableHeight = Math.max(0, bounds.height);
-  const above = Math.min(availableHeight, Math.max(0, target.top - bounds.y - gap - 8));
-  const below = Math.min(availableHeight, Math.max(0, boundsBottom - target.top - target.height - gap - 8));
+  // Settings may extend over BB chrome; page coordinates still use browser bounds.
+  const availableTop = expanded ? 0 : bounds.y;
+  const availableBottom = expanded ? Math.max(0, windowHeight) : boundsBottom;
+  const availableHeight = Math.max(0, availableBottom - availableTop);
+  const above = Math.min(availableHeight, Math.max(0, target.top - availableTop - gap - 8));
+  const below = Math.min(availableHeight, Math.max(0, availableBottom - target.top - target.height - gap - 8));
   const desiredHeight = expanded ? 360 : 44;
   const onBottom = below >= desiredHeight || below >= above;
   const sideSpace = onBottom ? below : above;
@@ -29,8 +32,8 @@ export function placeEditor(bounds: Rect, page: { width: number; height: number 
     ),
   );
   const top = onBottom
-    ? Math.max(bounds.y, Math.min(boundsBottom - maxHeight, target.top + target.height + gap))
-    : Math.max(bounds.y + maxHeight, Math.min(boundsBottom, target.top - gap));
+    ? Math.max(availableTop, Math.min(availableBottom - maxHeight, target.top + target.height + gap))
+    : Math.max(availableTop + maxHeight, Math.min(availableBottom, target.top - gap));
   return {
     target,
     popup: {
