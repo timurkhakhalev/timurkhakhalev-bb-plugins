@@ -22,6 +22,13 @@ export default async function plugin(bb: BbPluginApi) {
       description: "Smoothly resize the composer when it collapses or expands.",
       default: true,
     },
+    keepExpandedAfterKeyboard: {
+      type: "boolean",
+      label: "Keep the draft open after closing the keyboard",
+      description:
+        "On touch devices, don't collapse a composer with a draft when the keyboard's Done button closes the keyboard.",
+      default: true,
+    },
     hideGitBar: {
       type: "boolean",
       label: "Hide the git changes bar",

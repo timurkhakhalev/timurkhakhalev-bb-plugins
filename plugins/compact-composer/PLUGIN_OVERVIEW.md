@@ -1,10 +1,10 @@
 ## What you get
 
-A shorter thread composer that leaves more of the chat on screen. The prompt grows to a set number of lines and then scrolls, instead of taking up to half the window. The row under the composer (project, machine, branch, permissions, context) moves into the composer's own action row: only the branch stays visible, and project, machine, and "new thread here" open in a small card when you hover it. Permissions use the short label ("Full"). Collapsing and expanding the composer is animated.
+A shorter thread composer that leaves more of the chat on screen. The prompt grows to a set number of lines and then scrolls, instead of taking up to half the window. The row under the composer (project, machine, branch, permissions, context) moves into the composer's own action row: only the branch stays visible, and project, machine, and "new thread here" open in a small card when you hover it. Permissions use the short label ("Full"). Collapsing and expanding the composer is animated, and on a phone a draft stays open when you close the keyboard with Done.
 
 ## How it works
 
-The plugin restyles BB's own composer elements; it doesn't replace them, so every click, picker, and shortcut works as before. Settings let you change the maximum prompt height, keep the footer row under the composer, turn the animation off, and hide the git changes bar above the composer.
+The plugin restyles BB's own composer elements; it doesn't replace them, so every click, picker, and shortcut works as before. Settings let you change the maximum prompt height, keep the footer row under the composer, turn the animation off, let the keyboard collapse a draft again, and hide the git changes bar above the composer.
 
 ## Requirements
 

@@ -1,6 +1,6 @@
 ---
 name: compact-composer
-description: Change how the Compact Composer plugin lays out the BB thread composer (prompt height, footer placement, collapse animation, git changes bar) through its plugin settings.
+description: Change how the Compact Composer plugin lays out the BB thread composer (prompt height, footer placement, collapse animation, keeping a draft open after the mobile keyboard closes, git changes bar) through its plugin settings.
 ---
 
 # Compact Composer settings
@@ -18,6 +18,7 @@ bb plugin config compact-composer unset <key>             # back to the default
 | `editorMaxLines` | number | `8` | Lines the prompt grows to before it scrolls; clamped to 2–30. |
 | `inlineFooter` | boolean | `true` | Show the branch chip, permissions, and context in the composer's action row. `false` restores BB's own row under the composer. |
 | `animateCollapse` | boolean | `true` | Animate the composer when it collapses or expands. |
+| `keepExpandedAfterKeyboard` | boolean | `true` | On touch devices, keep a composer with a draft open when the keyboard's Done button closes the keyboard. |
 | `hideGitBar` | boolean | `false` | Hide the git changes bar (`Untracked · N files, +X -Y`) above the thread composer. |
 
 Constraints:

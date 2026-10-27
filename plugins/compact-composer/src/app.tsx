@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { definePluginApp, useSettings } from "@get-bb/plugin-sdk/app";
 import { ATTR_NO_ANIMATE, startCollapseAnimation } from "./collapse-animation";
+import { ATTR_ALLOW_KEYBOARD_COLLAPSE, startKeepExpanded } from "./keep-expanded";
 import { COMPACT_COMPOSER_CSS } from "./styles";
 
 // bb's composer DOM is not a public contract. The selectors in styles.ts rely
@@ -20,6 +21,7 @@ function SettingsBridge() {
   const inlineFooter = values.inlineFooter !== false;
   const hideGitBar = values.hideGitBar === true;
   const animateCollapse = values.animateCollapse !== false;
+  const keepExpanded = values.keepExpandedAfterKeyboard !== false;
 
   useEffect(() => {
     if (isLoading) return;
@@ -28,13 +30,15 @@ function SettingsBridge() {
     root.toggleAttribute(ATTR_FOOTER_BELOW, !inlineFooter);
     root.toggleAttribute(ATTR_HIDE_GIT_BAR, hideGitBar);
     root.toggleAttribute(ATTR_NO_ANIMATE, !animateCollapse);
+    root.toggleAttribute(ATTR_ALLOW_KEYBOARD_COLLAPSE, !keepExpanded);
     return () => {
       root.style.removeProperty(VAR_MAX_LINES);
       root.removeAttribute(ATTR_FOOTER_BELOW);
       root.removeAttribute(ATTR_HIDE_GIT_BAR);
       root.removeAttribute(ATTR_NO_ANIMATE);
+      root.removeAttribute(ATTR_ALLOW_KEYBOARD_COLLAPSE);
     };
-  }, [isLoading, maxLines, inlineFooter, hideGitBar, animateCollapse]);
+  }, [isLoading, maxLines, inlineFooter, hideGitBar, animateCollapse, keepExpanded]);
 
   return null;
 }
@@ -53,8 +57,10 @@ export default definePluginApp((app) => {
       style.textContent = COMPACT_COMPOSER_CSS;
       document.head.appendChild(style);
       const stopAnimation = startCollapseAnimation(signal);
+      const stopKeepExpanded = startKeepExpanded(signal);
       const remove = () => {
         stopAnimation();
+        stopKeepExpanded();
         style.remove();
       };
       signal.addEventListener("abort", remove, { once: true });
