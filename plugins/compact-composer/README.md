@@ -1,0 +1,60 @@
+# Compact Composer
+
+Makes the BB thread composer shorter, so more of the chat stays on screen.
+
+- **Prompt height cap.** The prompt grows to `editorMaxLines` lines (8 by default) and then scrolls. BB's own limit is half the viewport.
+- **Footer in the action row.** The row under the composer (project, machine, branch, permissions, context) moves into the action row, between the model picker and mic/send. It is anchored to the real controls, so it follows the send button's width (empty, with a send menu, Stop).
+- **Branch chip.** Only the branch is visible. Hovering (or focusing) it opens a card with the project, the machine, and the "new thread in this environment" button. BB's "Copy branch name" tooltip is hidden while you hover the chip, so it doesn't cover the card.
+- **Short permission label.** "Full" instead of "Full Access", using BB's own compact label.
+- **Collapse/expand animation.** The composer resizes smoothly when BB collapses or expands it, and the controls fade in. Respects `prefers-reduced-motion`.
+- **Optional:** hide the git changes bar (`Untracked · N files, +X -Y`) above the composer.
+
+When the composer is narrower than 600px, the footer keeps BB's own row under the composer.
+
+## Settings
+
+Settings → Installed plugins → Compact Composer, or from a terminal:
+
+```sh
+bb plugin config compact-composer
+bb plugin config compact-composer set editorMaxLines 10
+```
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `editorMaxLines` | `8` | Lines the prompt grows to before it scrolls (2–30). |
+| `inlineFooter` | `true` | Footer in the action row with the branch chip. `false` keeps BB's own row. |
+| `animateCollapse` | `true` | Animate collapse and expand. |
+| `hideGitBar` | `false` | Hide the git changes bar above the thread composer. |
+
+Changes apply immediately; no reload needed.
+
+## How it works
+
+- `src/styles.ts`: the stylesheet. Defaults (inline footer, animation) apply from CSS alone, so nothing jumps while settings load.
+- `src/app.tsx`: a content script injects the stylesheet and starts the animation. An app overlay with no UI mirrors the settings onto `<html>` attributes (`data-cc-footer-below`, `data-cc-no-animate`, `data-cc-hide-git-bar`) and the `--cc-editor-max-lines` variable.
+- `src/collapse-animation.ts`: BB swaps the composer layout in one commit when it toggles `data-promptbox-compact` on the form, so the plugin plays a FLIP animation from the last observed height to the new one with the Web Animations API.
+- `src/server.ts`: declares the settings only.
+
+BB's composer markup isn't a public contract. The selectors use its `data-promptbox-*` / `data-follow-up-composer-*` attributes, ids, and aria labels rather than Tailwind classes, but a BB update can still break them. Things that are easy to get wrong:
+
+- On blur, BB removes `data-follow-up-composer-expanded` and sets `data-promptbox-collapsed` while the full composer is still shown. Only `data-promptbox-compact` marks the one-line pill.
+- `:has()` can't be nested, so selectors built from `FOOTER`/`ENV` can't go inside another `:has()`.
+- Rules for portaled elements (tooltips) must live outside `@container`, because container queries only match descendants of the container.
+
+## Development
+
+```sh
+bun install
+bun run check
+bb plugin build
+```
+
+For a live loop against a local BB server, install the directory and run `bb plugin dev`:
+
+```sh
+bb plugin install "$PWD"
+bb plugin dev
+```
+
+If the BB server runs on another machine, the path must exist there: copy `package.json`, `src/`, `skills/`, and `dist/` to that machine (for example with `bb file write --host <host-id>`), install that path, and run `bb plugin reload compact-composer` after each copy.

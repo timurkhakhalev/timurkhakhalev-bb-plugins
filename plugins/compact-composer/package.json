@@ -1,0 +1,46 @@
+{
+  "name": "bb-plugin-compact-composer",
+  "version": "0.1.0",
+  "description": "Makes the BB thread composer shorter: caps the prompt height, puts the branch, permissions, and context in the action row, and animates collapse and expand.",
+  "type": "module",
+  "homepage": "https://github.com/timurkhakhalev/timurkhakhalev-bb-plugins/tree/main/plugins/compact-composer",
+  "bugs": {
+    "url": "https://github.com/timurkhakhalev/timurkhakhalev-bb-plugins/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timurkhakhalev/timurkhakhalev-bb-plugins.git",
+    "directory": "plugins/compact-composer"
+  },
+  "files": [
+    "dist",
+    "src",
+    "skills",
+    "README.md",
+    "PLUGIN_OVERVIEW.md"
+  ],
+  "scripts": {
+    "build": "bb plugin build",
+    "check": "tsc --noEmit"
+  },
+  "engines": {
+    "bb": ">=0.47",
+    "bbPluginSdk": ">=0.6.60"
+  },
+  "bb": {
+    "name": "Compact Composer",
+    "description": "Makes the thread composer shorter: caps the prompt height, puts the branch, permissions, and context in the action row, and animates collapse and expand.",
+    "branding": {
+      "icon": "Minimize2"
+    },
+    "server": "./src/server.ts",
+    "app": "./src/app.tsx"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.60",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}

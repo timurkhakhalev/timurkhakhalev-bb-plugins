@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "bun run --cwd plugins/browser-annotate check",
-    "build": "bb plugin build plugins/browser-annotate"
+    "check": "bun run --cwd plugins/browser-annotate check && bun run --cwd plugins/compact-composer check",
+    "build": "bb plugin build plugins/browser-annotate && bb plugin build plugins/compact-composer"
   }
 }
