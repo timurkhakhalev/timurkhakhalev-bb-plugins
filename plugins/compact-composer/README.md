@@ -5,12 +5,12 @@ Makes the BB thread composer shorter, so more of the chat stays on screen.
 - **Prompt height cap.** The prompt grows to `editorMaxLines` lines (8 by default) and then scrolls. BB's own limit is half the viewport.
 - **Footer in the action row.** The row under the composer (project, machine, branch, permissions, context) moves into the action row, between the model picker and mic/send. It is anchored to the real controls, so it follows the send button's width (empty, with a send menu, Stop).
 - **Branch chip.** Only the branch is visible. Hovering (or focusing) it opens a card with the project, the machine, and the "new thread in this environment" button. BB's "Copy branch name" tooltip is hidden while you hover the chip, so it doesn't cover the card.
-- **Short permission label.** "Full" instead of "Full Access", using BB's own compact label.
+- **Permission control.** BB's short label ("Full" instead of "Full Access") with a shield icon instead of the dropdown chevron: a crossed-out shield for Full Access (no sandbox, no approvals), a shield with a check for the other modes. The icon shows in side chats and when the footer is in its own row too.
 - **Collapse/expand animation.** The composer resizes smoothly when BB collapses or expands it, and the controls fade in. Respects `prefers-reduced-motion`.
 - **Draft stays open after the keyboard closes (touch devices).** BB collapses the composer when the keyboard's Done button closes the keyboard, squeezing a typed draft into a one-line pill. With a draft, the composer now stays open; tapping outside it, or closing the keyboard on an empty composer, still collapses it.
 - **Optional:** hide the git changes bar (`Untracked · N files, +X -Y`) above the composer.
 
-When the composer is narrower than 600px, the footer keeps BB's own row under the composer.
+The same layout applies to side chats. When a composer is narrower than 440px (a phone), the footer keeps BB's own row under it.
 
 ## Settings
 

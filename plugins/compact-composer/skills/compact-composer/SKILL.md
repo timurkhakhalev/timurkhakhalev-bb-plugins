@@ -24,5 +24,5 @@ bb plugin config compact-composer unset <key>             # back to the default
 Constraints:
 
 - Only the thread composer gets the inline footer; the new-thread screen keeps BB's layout except for the prompt height cap.
-- The inline footer turns off by itself when the composer is narrower than 600px.
+- The inline footer turns off by itself when the composer is narrower than 440px.
 - The plugin styles BB's composer markup, which isn't a public API. If the composer looks broken after a BB update, disable the plugin with `bb plugin disable compact-composer` and report it.

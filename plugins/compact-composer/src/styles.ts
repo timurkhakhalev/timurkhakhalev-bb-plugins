@@ -6,6 +6,18 @@ const FOOTER =
 // Project, machine, branch, and "new thread here" row inside the footer.
 const ENV = `${FOOTER} > :first-child > div:has(> [data-promptbox-hide-branch-compact])`;
 
+// Lucide shield-check / shield-off, used as CSS masks so they take the label colour.
+const svgUrl = (paths: string) =>
+  `url("data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>${paths}</svg>`,
+  )}")`;
+const SHIELD_CHECK = svgUrl(
+  "<path d='M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z'/><path d='m9 12 2 2 4-4'/>",
+);
+const SHIELD_OFF = svgUrl(
+  "<path d='m2 2 20 20'/><path d='M5 5a1 1 0 0 0-1 1v7c0 5 3.5 7.5 7.67 8.94a1 1 0 0 0 .67.01c2.35-.82 4.48-1.97 5.9-3.71'/><path d='M9.309 3.652A12.252 12.252 0 0 0 11.24 2.28a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1v7a9.784 9.784 0 0 1-.08 1.264'/>",
+);
+
 export const COMPACT_COMPOSER_CSS = /* css */ `
 /* Editor: cap the height (bb allows up to half the viewport). */
 [data-promptbox] [data-promptbox-editor-scroll] {
@@ -39,7 +51,7 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
 [data-follow-up-composer] [data-promptbox-action-row] > [data-promptbox-standard-actions]:last-child {
   anchor-name: --cc-send;
 }
-@container cc-composer (min-width: 600px) {
+@container cc-composer (min-width: 440px) {
   html:not([data-cc-footer-below]) ${FOOTER} {
     position: absolute !important;
     left: 220px;
@@ -145,6 +157,29 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
   html:not([data-cc-footer-below]) ${FOOTER} button[aria-label="Permission mode"] [data-promptbox-compact-label] {
     display: inline !important;
   }
+}
+
+/* A shield in place of the dropdown chevron: shield-off for Full Access
+   (no sandbox, no approvals), shield-check for the other modes.
+   Applies whether the footer is inline or in its own row. */
+[data-follow-up-composer-footer] button[aria-label="Permission mode"] {
+  gap: 4px !important;
+}
+[data-follow-up-composer-footer] button[aria-label="Permission mode"] > svg {
+  display: none !important;
+}
+[data-follow-up-composer-footer] button[aria-label="Permission mode"]::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  -webkit-mask: ${SHIELD_CHECK} center / contain no-repeat;
+  mask: ${SHIELD_CHECK} center / contain no-repeat;
+}
+[data-follow-up-composer-footer] button[aria-label="Permission mode"]:has(> [title^="Permission mode: Full"])::before {
+  -webkit-mask-image: ${SHIELD_OFF};
+  mask-image: ${SHIELD_OFF};
 }
 
 /* bb's own tooltips ("Copy branch name") would cover the env card. Keyed on
