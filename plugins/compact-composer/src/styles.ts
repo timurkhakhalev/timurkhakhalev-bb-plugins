@@ -290,6 +290,48 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
   }
 }
 
+/* Narrow new-thread composer (phones): bb squeezes the branch picker's label
+   to a sliver, and a long project name pushes that text over the agent-mode
+   button. Show the branch as an icon only, let the project name truncate,
+   and keep the picker group inside its own box. */
+@container promptbox-shell (max-width: 439.98px) {
+  ${NT_PICKERS} {
+    overflow: hidden;
+  }
+  ${NT_FOOTER} button[aria-label="Branch"] > span > span:not(:has(svg)) {
+    display: none !important;
+  }
+  /* The project name gives way first; environment and branch stay whole. */
+  ${NT_PICKERS} button:not([data-promptbox-project-control]) {
+    flex-shrink: 0 !important;
+  }
+  ${NT_PICKERS} [data-promptbox-project-control] {
+    min-width: 0;
+    flex-shrink: 1 !important;
+  }
+  ${NT_PICKERS} [data-promptbox-project-control] [data-promptbox-compact-label] {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* Mobile drawers (model picker and other composer pickers): bb animates
+   every open except the first one after a page load, when the drawer mounts
+   straight at its open position. Give it a starting position so the first
+   open slides up too; bb's own inline transition does the rest. */
+@media (prefers-reduced-motion: no-preference) {
+  @starting-style {
+    html:not([data-cc-no-animate]) [data-persistent-drawer-content][data-state="open"] {
+      transform: translate3d(0, 100%, 0) !important;
+    }
+    html:not([data-cc-no-animate]) [data-persistent-drawer-backdrop][data-state="open"] {
+      opacity: 0 !important;
+    }
+  }
+}
+
 /* bb's own tooltips ("Copy branch name") would cover the env card. Keyed on
    the branch button directly because :has() cannot nest (ENV uses one), and
    kept outside @container because the tooltip is portaled out of the composer. */
