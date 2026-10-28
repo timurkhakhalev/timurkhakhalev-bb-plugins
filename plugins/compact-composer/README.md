@@ -10,6 +10,8 @@ Makes the BB thread composer shorter, so more of the chat stays on screen.
 - **Draft stays open after the keyboard closes (touch devices).** BB collapses the composer when the keyboard's Done button closes the keyboard, squeezing a typed draft into a one-line pill. With a draft, the composer now stays open; tapping outside it, or closing the keyboard on an empty composer, still collapses it.
 - **Optional:** hide the git changes bar (`Untracked · N files, +X -Y`) above the composer.
 
+- **New-thread composer.** Its picker row (project, environment or machine, branch, permissions) moves into the action row the same way. The last picker, usually the branch, stays visible; project and environment open in a card on hover, and the card stays open while one of its dropdowns is open.
+
 The same layout applies to side chats. When a composer is narrower than 440px (a phone), the footer keeps BB's own row under it.
 
 ## Settings
@@ -44,6 +46,7 @@ BB's composer markup isn't a public contract. The selectors use its `data-prompt
 - On blur, BB removes `data-follow-up-composer-expanded` and sets `data-promptbox-collapsed` while the full composer is still shown. Only `data-promptbox-compact` marks the one-line pill.
 - `:has()` can't be nested, so selectors built from `FOOTER`/`ENV` can't go inside another `:has()`.
 - Rules for portaled elements (tooltips) must live outside `@container`, because container queries only match descendants of the container.
+- Don't declare a `container` on BB's elements. BB already names them (`promptbox-shell` on `[data-app-composer]`, `follow-up-composer` on the thread composer) and uses them for its compact layout; a new name replaces BB's and breaks that layout on phones. Width checks query BB's `promptbox-shell` instead.
 
 ## Development
 

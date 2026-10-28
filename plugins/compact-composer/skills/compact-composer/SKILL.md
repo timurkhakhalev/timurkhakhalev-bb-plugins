@@ -1,6 +1,6 @@
 ---
 name: compact-composer
-description: Change how the Compact Composer plugin lays out the BB thread composer (prompt height, footer placement, collapse animation, keeping a draft open after the mobile keyboard closes, git changes bar) through its plugin settings.
+description: Change how the Compact Composer plugin lays out the BB thread and new-thread composers (prompt height, footer placement, collapse animation, keeping a draft open after the mobile keyboard closes, git changes bar) through its plugin settings.
 ---
 
 # Compact Composer settings
@@ -23,6 +23,6 @@ bb plugin config compact-composer unset <key>             # back to the default
 
 Constraints:
 
-- Only the thread composer gets the inline footer; the new-thread screen keeps BB's layout except for the prompt height cap.
+- The inline footer applies to thread, side-chat, and new-thread composers. On the new-thread screen the last picker (usually the branch) stays visible and the project and environment pickers open in a hover card.
 - The inline footer turns off by itself when the composer is narrower than 440px.
 - The plugin styles BB's composer markup, which isn't a public API. If the composer looks broken after a BB update, disable the plugin with `bb plugin disable compact-composer` and report it.

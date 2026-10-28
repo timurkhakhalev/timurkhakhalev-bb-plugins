@@ -4,6 +4,10 @@
 const FOOTER =
   "[data-follow-up-composer]:has(> * form[data-promptbox]:not([data-promptbox-compact])) > [data-follow-up-composer-footer]";
 // Project, machine, branch, and "new thread here" row inside the footer.
+// New-thread footer and its picker group. No :has() in either, so rules can
+// add their own.
+const NT_FOOTER = "[data-new-thread-footer]";
+const NT_PICKERS = `${NT_FOOTER} > :first-child`;
 const ENV = `${FOOTER} > :first-child > div:has(> [data-promptbox-hide-branch-compact])`;
 
 // Lucide shield-check / shield-off, used as CSS masks so they take the label colour.
@@ -41,17 +45,19 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
    free space of the action row, between the model picker and mic/send.
    On by default so it never flashes below while settings load; sized by the
    composer's own width, not the window's. */
+/* Width checks use bb's own "promptbox-shell" container on [data-app-composer].
+   Never declare a container on bb's elements: that replaces bb's container
+   name and breaks its compact layout (labels overlap on phones). */
 [data-follow-up-composer] {
-  container: cc-composer / inline-size;
   anchor-scope: --cc-model, --cc-send;
 }
-[data-follow-up-composer] button[aria-label^="Provider, model and reasoning"] {
+[data-app-composer] button[aria-label^="Provider, model and reasoning"] {
   anchor-name: --cc-model;
 }
-[data-follow-up-composer] [data-promptbox-action-row] > [data-promptbox-standard-actions]:last-child {
+[data-app-composer] [data-promptbox-action-row] > [data-promptbox-standard-actions]:last-child {
   anchor-name: --cc-send;
 }
-@container cc-composer (min-width: 440px) {
+@container promptbox-shell (min-width: 440px) {
   html:not([data-cc-footer-below]) ${FOOTER} {
     position: absolute !important;
     left: 220px;
@@ -161,14 +167,17 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
 
 /* A shield in place of the dropdown chevron: shield-off for Full Access
    (no sandbox, no approvals), shield-check for the other modes.
-   Applies whether the footer is inline or in its own row. */
-[data-follow-up-composer-footer] button[aria-label="Permission mode"] {
+   Applies to thread and new-thread composers, inline or in their own row. */
+[data-follow-up-composer-footer] button[aria-label="Permission mode"],
+[data-new-thread-footer] button[aria-label="Permission mode"] {
   gap: 4px !important;
 }
-[data-follow-up-composer-footer] button[aria-label="Permission mode"] > svg {
+[data-follow-up-composer-footer] button[aria-label="Permission mode"] > svg,
+[data-new-thread-footer] button[aria-label="Permission mode"] > svg {
   display: none !important;
 }
-[data-follow-up-composer-footer] button[aria-label="Permission mode"]::before {
+[data-follow-up-composer-footer] button[aria-label="Permission mode"]::before,
+[data-new-thread-footer] button[aria-label="Permission mode"]::before {
   content: "";
   flex: none;
   width: 14px;
@@ -177,9 +186,108 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
   -webkit-mask: ${SHIELD_CHECK} center / contain no-repeat;
   mask: ${SHIELD_CHECK} center / contain no-repeat;
 }
-[data-follow-up-composer-footer] button[aria-label="Permission mode"]:has(> [title^="Permission mode: Full"])::before {
+[data-follow-up-composer-footer] button[aria-label="Permission mode"]:has(> [title^="Permission mode: Full"])::before,
+[data-new-thread-footer] button[aria-label="Permission mode"]:has(> [title^="Permission mode: Full"])::before {
   -webkit-mask-image: ${SHIELD_OFF};
   mask-image: ${SHIELD_OFF};
+}
+
+/* New-thread composer: same idea, but its footer holds real pickers
+   (project, environment/machine, branch). The last picker (the branch once an
+   environment is chosen) stays visible as the chip; the others move into a
+   card that opens on hover/focus and stays open while one of its pickers has
+   its dropdown open. */
+[data-app-composer]:has(> [data-new-thread-footer]) {
+  position: relative;
+  anchor-scope: --cc-model, --cc-send;
+}
+@container promptbox-shell (min-width: 440px) {
+  html:not([data-cc-footer-below]) ${NT_FOOTER} {
+    position: absolute !important;
+    left: 220px;
+    right: 96px;
+    bottom: 8px;
+    margin: 0 !important;
+    padding: 0 !important;
+    z-index: 21;
+    justify-content: flex-end;
+    gap: 8px !important;
+    pointer-events: none;
+    overflow: visible !important;
+  }
+  @supports (anchor-name: --a) {
+    html:not([data-cc-footer-below]) ${NT_FOOTER} {
+      left: calc(anchor(--cc-model right, 220px) + 8px);
+      right: calc(anchor(--cc-send left, 96px) + 4px);
+    }
+  }
+  html:not([data-cc-footer-below]) ${NT_FOOTER} > * {
+    pointer-events: auto;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS} {
+    position: relative;
+    flex: 0 1 auto !important;
+    min-width: 0;
+    overflow: visible !important;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > :last-child {
+    max-width: 200px;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS}::before,
+  html:not([data-cc-footer-below]) ${NT_PICKERS}::after,
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > :not(:last-child) {
+    position: absolute !important;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 120ms ease-out, visibility 0s linear 120ms;
+    z-index: 1;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS}::before {
+    content: "";
+    box-sizing: border-box;
+    right: -6px;
+    bottom: calc(100% + 8px);
+    width: 280px;
+    height: 42px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--popover);
+    box-shadow: 0 8px 24px -6px rgb(0 0 0 / 0.18);
+    z-index: 0;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS}:has(> :nth-child(3))::before {
+    height: 76px;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS}::after {
+    content: "";
+    right: -6px;
+    bottom: 100%;
+    width: 280px;
+    height: 10px;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > :not(:last-child) {
+    left: calc(100% - 266px);
+    max-width: 264px !important;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > :nth-last-child(2) {
+    bottom: calc(100% + 13px);
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > :nth-last-child(3) {
+    bottom: calc(100% + 47px);
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS}:is(:hover, :focus-within, :has([aria-expanded="true"]))::before,
+  html:not([data-cc-footer-below]) ${NT_PICKERS}:is(:hover, :focus-within, :has([aria-expanded="true"]))::after,
+  html:not([data-cc-footer-below]) ${NT_PICKERS}:is(:hover, :focus-within, :has([aria-expanded="true"])) > * {
+    visibility: visible;
+    opacity: 1;
+    transition: opacity 120ms ease-out;
+  }
+  html:not([data-cc-footer-below]) ${NT_FOOTER} button[aria-label="Permission mode"] [data-promptbox-full-label] {
+    display: none !important;
+  }
+  html:not([data-cc-footer-below]) ${NT_FOOTER} button[aria-label="Permission mode"] [data-promptbox-compact-label] {
+    display: inline !important;
+  }
 }
 
 /* bb's own tooltips ("Copy branch name") would cover the env card. Keyed on
@@ -190,12 +298,14 @@ html:not([data-cc-footer-below]):has([data-follow-up-composer-footer] [data-prom
 }
 
 /* Git changes bar above the thread composer. Hide only the git row; the
-   whole context section goes when git is its only row. */
+   whole context section goes when git is its only row. The toggle's depth
+   changes between bb versions (it moved into the bb--git plugin), so match
+   it anywhere inside the section. */
 html[data-cc-hide-git-bar] #thread-prompt-banner-git-toggle,
 html[data-cc-hide-git-bar] #thread-prompt-banner-git-body {
   display: none !important;
 }
-html[data-cc-hide-git-bar] section[aria-label="Thread context before sending"]:has(> * > #thread-prompt-banner-git-toggle):not(:has(> :nth-child(3))) {
+html[data-cc-hide-git-bar] section:has(#thread-prompt-banner-git-toggle):not(:has(> :nth-child(3))) {
   display: none !important;
 }
 

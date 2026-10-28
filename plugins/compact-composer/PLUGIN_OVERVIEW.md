@@ -1,6 +1,6 @@
 ## What you get
 
-A shorter thread composer that leaves more of the chat on screen. The prompt grows to a set number of lines and then scrolls, instead of taking up to half the window. The row under the composer (project, machine, branch, permissions, context) moves into the composer's own action row: only the branch stays visible, and project, machine, and "new thread here" open in a small card when you hover it. Permissions use the short label ("Full") with a shield icon instead of a dropdown arrow. Collapsing and expanding the composer is animated, and on a phone a draft stays open when you close the keyboard with Done.
+A shorter thread composer that leaves more of the chat on screen. The prompt grows to a set number of lines and then scrolls, instead of taking up to half the window. The row under the composer (project, machine, branch, permissions, context) moves into the composer's own action row: only the branch stays visible, and project, machine, and "new thread here" open in a small card when you hover it. The new-thread composer gets the same treatment: the branch picker stays visible and project and environment open in a card. Permissions use the short label ("Full") with a shield icon instead of a dropdown arrow. Collapsing and expanding the composer is animated, and on a phone a draft stays open when you close the keyboard with Done.
 
 ## How it works
 
