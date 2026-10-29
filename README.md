@@ -7,7 +7,8 @@ Public collection of plugins for [BB](https://github.com/get-bb/bb).
 | Plugin | Description | Status |
 | --- | --- | --- |
 | [Browser Annotate](./plugins/browser-annotate) | Add comments to elements in a native BB Browser tab and send them with screenshots to the current chat. | 0.1.1 |
-| [Compact Composer](./plugins/compact-composer) | A shorter thread composer: capped prompt height, branch chip and permissions in the action row, animated collapse. | 0.1.0 |
+
+Personal, not in the collection: [Timur UI](./plugins/timur-ui), my own bb look (shorter composer plus Beautiful Chat's chat restyle).
 
 ## Install
 

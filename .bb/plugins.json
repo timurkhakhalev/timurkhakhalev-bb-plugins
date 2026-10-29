@@ -6,10 +6,6 @@
     {
       "name": "browser-annotate",
       "source": "./plugins/browser-annotate"
-    },
-    {
-      "name": "compact-composer",
-      "source": "./plugins/compact-composer"
     }
   ]
 }

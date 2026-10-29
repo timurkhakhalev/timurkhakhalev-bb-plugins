@@ -8,6 +8,10 @@ const FOOTER =
 // add their own.
 const NT_FOOTER = "[data-new-thread-footer]";
 const NT_PICKERS = `${NT_FOOTER} > :first-child`;
+// The environment picker, the one that moves into the card; the project picker
+// and the last picker (branch) stay visible as chips.
+const NT_CARD_ITEM = ":not(:last-child):not([data-promptbox-project-control])";
+const NT_CARD = `${NT_PICKERS} > ${NT_CARD_ITEM}`;
 const ENV = `${FOOTER} > :first-child > div:has(> [data-promptbox-hide-branch-compact])`;
 
 // Lucide shield-check / shield-off, used as CSS masks so they take the label colour.
@@ -193,10 +197,10 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
 }
 
 /* New-thread composer: same idea, but its footer holds real pickers
-   (project, environment/machine, branch). The last picker (the branch once an
-   environment is chosen) stays visible as the chip; the others move into a
-   card that opens on hover/focus and stays open while one of its pickers has
-   its dropdown open. */
+   (project, environment/machine, branch). The project and the last picker
+   (the branch once an environment is chosen) stay visible as chips; the
+   environment moves into a card that opens on hover/focus and stays open
+   while its dropdown is open. */
 [data-app-composer]:has(> [data-new-thread-footer]) {
   position: relative;
   anchor-scope: --cc-model, --cc-send;
@@ -233,9 +237,12 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
   html:not([data-cc-footer-below]) ${NT_PICKERS} > :last-child {
     max-width: 200px;
   }
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > [data-promptbox-project-control]:not(:last-child) {
+    max-width: 160px;
+  }
   html:not([data-cc-footer-below]) ${NT_PICKERS}::before,
   html:not([data-cc-footer-below]) ${NT_PICKERS}::after,
-  html:not([data-cc-footer-below]) ${NT_PICKERS} > :not(:last-child) {
+  html:not([data-cc-footer-below]) ${NT_CARD} {
     position: absolute !important;
     visibility: hidden;
     opacity: 0;
@@ -255,9 +262,6 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
     box-shadow: 0 8px 24px -6px rgb(0 0 0 / 0.18);
     z-index: 0;
   }
-  html:not([data-cc-footer-below]) ${NT_PICKERS}:has(> :nth-child(3))::before {
-    height: 76px;
-  }
   html:not([data-cc-footer-below]) ${NT_PICKERS}::after {
     content: "";
     right: -6px;
@@ -265,19 +269,14 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
     width: 280px;
     height: 10px;
   }
-  html:not([data-cc-footer-below]) ${NT_PICKERS} > :not(:last-child) {
+  html:not([data-cc-footer-below]) ${NT_CARD} {
     left: calc(100% - 266px);
+    bottom: calc(100% + 13px);
     max-width: 264px !important;
   }
-  html:not([data-cc-footer-below]) ${NT_PICKERS} > :nth-last-child(2) {
-    bottom: calc(100% + 13px);
-  }
-  html:not([data-cc-footer-below]) ${NT_PICKERS} > :nth-last-child(3) {
-    bottom: calc(100% + 47px);
-  }
-  html:not([data-cc-footer-below]) ${NT_PICKERS}:is(:hover, :focus-within, :has([aria-expanded="true"]))::before,
-  html:not([data-cc-footer-below]) ${NT_PICKERS}:is(:hover, :focus-within, :has([aria-expanded="true"]))::after,
-  html:not([data-cc-footer-below]) ${NT_PICKERS}:is(:hover, :focus-within, :has([aria-expanded="true"])) > * {
+  html:not([data-cc-footer-below]) ${NT_PICKERS}:has(> ${NT_CARD_ITEM}):is(:hover, :focus-within, :has([aria-expanded="true"]))::before,
+  html:not([data-cc-footer-below]) ${NT_PICKERS}:has(> ${NT_CARD_ITEM}):is(:hover, :focus-within, :has([aria-expanded="true"]))::after,
+  html:not([data-cc-footer-below]) ${NT_PICKERS}:is(:hover, :focus-within, :has([aria-expanded="true"])) > ${NT_CARD_ITEM} {
     visibility: visible;
     opacity: 1;
     transition: opacity 120ms ease-out;
@@ -343,11 +342,11 @@ html:not([data-cc-footer-below]):has([data-follow-up-composer-footer] [data-prom
    whole context section goes when git is its only row. The toggle's depth
    changes between bb versions (it moved into the bb--git plugin), so match
    it anywhere inside the section. */
-html[data-cc-hide-git-bar] #thread-prompt-banner-git-toggle,
-html[data-cc-hide-git-bar] #thread-prompt-banner-git-body {
+html:not([data-cc-show-git-bar]) #thread-prompt-banner-git-toggle,
+html:not([data-cc-show-git-bar]) #thread-prompt-banner-git-body {
   display: none !important;
 }
-html[data-cc-hide-git-bar] section:has(#thread-prompt-banner-git-toggle):not(:has(> :nth-child(3))) {
+html:not([data-cc-show-git-bar]) section:has(#thread-prompt-banner-git-toggle):not(:has(> :nth-child(3))) {
   display: none !important;
 }
 

@@ -1,0 +1,51 @@
+{
+  "name": "bb-plugin-timur-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Timur's personal bb look: a shorter composer with the footer in the action row, plus Beautiful Chat's restyled chat (messages, work rows, loaders, approval cards, changed files).",
+  "type": "module",
+  "homepage": "https://github.com/timurkhakhalev/timurkhakhalev-bb-plugins/tree/main/plugins/timur-ui",
+  "bugs": {
+    "url": "https://github.com/timurkhakhalev/timurkhakhalev-bb-plugins/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timurkhakhalev/timurkhakhalev-bb-plugins.git",
+    "directory": "plugins/timur-ui"
+  },
+  "files": [
+    "dist",
+    "src",
+    "skills",
+    "README.md",
+    "LICENSE-beautiful-chat"
+  ],
+  "scripts": {
+    "build": "bb plugin build",
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/chat/*.test.ts"
+  },
+  "engines": {
+    "bb": ">=0.47",
+    "bbPluginSdk": ">=0.6.60"
+  },
+  "bb": {
+    "name": "Timur UI",
+    "description": "Timur's personal bb look: a shorter composer with the footer in the action row, plus Beautiful Chat's restyled chat (messages, work rows, loaders, approval cards, changed files).",
+    "branding": {
+      "icon": "Sparkles"
+    },
+    "server": "./src/server.ts",
+    "app": "./src/app.tsx"
+  },
+  "dependencies": {
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.79",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}
