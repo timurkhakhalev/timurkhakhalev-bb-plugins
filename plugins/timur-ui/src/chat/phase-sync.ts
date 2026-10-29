@@ -3,6 +3,8 @@
 // 0, so shimmers and loaders visibly jump back. Pinning every looping animation to
 // the document clock means a remounted copy resumes exactly where the old one was.
 // One-shot animations are left alone.
+// This plugin's own loaders and shimmer are APNG masks now, which share one frame clock
+// per image and never restart; this keeps BB's remaining CSS loops (spinners) in step.
 export function mountPhaseSync(): () => void {
   const sync = (event: AnimationEvent) => {
     const now = document.timeline.currentTime;

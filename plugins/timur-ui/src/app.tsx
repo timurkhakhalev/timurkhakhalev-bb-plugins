@@ -11,7 +11,6 @@ import { ATTR_NO_ANIMATE, startCollapseAnimation } from "./composer/collapse-ani
 import { ATTR_ALLOW_KEYBOARD_COLLAPSE, startKeepExpanded } from "./composer/keep-expanded";
 import { COMPACT_COMPOSER_CSS } from "./composer/styles";
 import { rootAttributes } from "./chat/settings";
-import { registerCoinsWorklet } from "./chat/coins-worklet";
 import { mountSpatialTooltips } from "./chat/spatial-tooltip";
 import { mountPhaseSync } from "./chat/phase-sync";
 import { mountPerfMarkers } from "./chat/perf-markers";
@@ -62,21 +61,6 @@ function SettingsBridge() {
 
   const tooltips = !off.includes("actions");
   useEffect(() => (tooltips ? mountSpatialTooltips() : undefined), [tooltips]);
-
-  // The coins loader paints through a CSS Paint Worklet; until it is registered (or if
-  // it can't be) app.css keeps showing the drive loader instead of a blank icon.
-  const coins = loader === "coins";
-  useEffect(() => {
-    if (!coins) return;
-    let current = true;
-    registerCoinsWorklet().then((ready) => {
-      if (current && ready) document.documentElement.setAttribute("data-bui-coins-ready", "");
-    });
-    return () => {
-      current = false;
-      document.documentElement.removeAttribute("data-bui-coins-ready");
-    };
-  }, [coins]);
 
   return null;
 }
