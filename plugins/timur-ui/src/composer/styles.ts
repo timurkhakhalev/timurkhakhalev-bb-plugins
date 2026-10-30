@@ -111,9 +111,10 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
     min-width: 0;
     padding-right: 0 !important;
   }
-  /* The machine label gives way first; the branch keeps its width. */
+  /* The machine label gives way first, down to a few letters; the branch
+     keeps its width. */
   html:not([data-cc-footer-below]) ${ENV} > span {
-    min-width: 16px;
+    min-width: 72px;
     max-width: 180px !important;
     flex: 0 1 auto !important;
   }
@@ -168,18 +169,48 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
     bottom: calc(100% + 14px);
     margin: 0 !important;
   }
-  html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within)::before,
-  html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within)::after,
-  html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within) > ${ENV_CARD_ITEM} {
+  /* The card holds the project, so it opens from the branch chip and the card
+     itself, not from the machine label, whose name is already in view. */
+  html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within):not(:has(> span:hover))::before,
+  html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within):not(:has(> span:hover))::after,
+  html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within):not(:has(> span:hover)) > ${ENV_CARD_ITEM} {
     visibility: visible;
     opacity: 1;
     transition: opacity 120ms ease-out;
   }
-  /* Side chats and other narrow composers: the machine shows as its icon only,
-     rather than a label cut to one letter. */
-  @container promptbox-shell (max-width: 599.98px) {
+  /* Side chats and other narrow composers: no room for the machine name, so
+     only its icon stays in the row and the name moves into the card, above
+     the project. Here the card opens from the icon too. */
+  @container promptbox-shell (max-width: 499.98px) {
+    html:not([data-cc-footer-below]) ${ENV} > span {
+      min-width: 0;
+    }
+    html:not([data-cc-footer-below]) ${ENV}::before {
+      height: 68px;
+    }
     html:not([data-cc-footer-below]) ${ENV} > span > span {
-      display: none;
+      position: absolute;
+      left: calc(100% - 232px);
+      bottom: calc(100% + 18px);
+      max-width: 220px;
+      visibility: hidden;
+      opacity: 0;
+      transition: opacity 120ms ease-out, visibility 0s linear 120ms;
+      z-index: 1;
+    }
+    html:not([data-cc-footer-below]) ${ENV} > [data-option-display] {
+      bottom: calc(100% + 42px);
+    }
+    html:not([data-cc-footer-below]) ${ENV} > button[aria-label="New thread in this environment"] {
+      bottom: calc(100% + 40px);
+    }
+    html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within)::before,
+    html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within)::after,
+    html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within) > ${ENV_CARD_ITEM},
+    html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within) > span > span {
+      visibility: visible;
+      opacity: 1;
+      transition: opacity 120ms ease-out;
     }
   }
 
@@ -269,15 +300,17 @@ ${NT_FOOTER} button[aria-label="Environment"] span:has(> svg[data-icon]:not([dat
   html:not([data-cc-footer-below]) ${NT_FOOTER} > * {
     pointer-events: auto;
   }
+  /* Clip rather than spill over mic/send when even truncated labels don't
+     fit; the pickers' menus are portaled, so they aren't clipped. */
   html:not([data-cc-footer-below]) ${NT_PICKERS} {
     position: relative;
     flex: 0 1 auto !important;
     min-width: 0;
-    overflow: visible !important;
+    overflow: hidden !important;
   }
-  /* Only the environment label gives way; project and branch keep their
-     (capped) width. The branch picker comes from the git plugin, inside a
-     display: contents root. */
+  /* Only the environment label gives way, down to its icon; project and
+     branch keep their (capped) width. The branch picker comes from the git
+     plugin, inside a display: contents root. */
   html:not([data-cc-footer-below]) ${NT_PICKERS} > button,
   html:not([data-cc-footer-below]) ${NT_PICKERS} button[aria-label="Branch"] {
     min-width: 0;
@@ -288,19 +321,17 @@ ${NT_FOOTER} button[aria-label="Environment"] span:has(> svg[data-icon]:not([dat
     max-width: 150px;
   }
   html:not([data-cc-footer-below]) ${NT_PICKERS} > button[aria-label="Environment"] {
-    min-width: 80px;
-    max-width: 200px;
+    min-width: 36px;
+    max-width: 220px;
     flex: 0 1 auto !important;
   }
-  /* Less room: the short label ("Project checkout", "Worktree") instead of
-     "<machine> · <kind>", so it doesn't truncate to a single letter. */
-  @container promptbox-shell (max-width: 799.98px) {
-    html:not([data-cc-footer-below]) ${NT_PICKERS} > button[aria-label="Environment"] [data-promptbox-full-label] {
-      display: none !important;
-    }
-    html:not([data-cc-footer-below]) ${NT_PICKERS} > button[aria-label="Environment"] [data-promptbox-compact-label] {
-      display: block !important;
-    }
+  /* The machine's name, which leads bb's full label ("<machine> · <kind>"),
+     instead of the short label that drops it. */
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > button[aria-label="Environment"] [data-promptbox-full-label] {
+    display: block !important;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > button[aria-label="Environment"] [data-promptbox-compact-label] {
+    display: none !important;
   }
   html:not([data-cc-footer-below]) ${NT_FOOTER} button[aria-label="Permission mode"] [data-promptbox-full-label] {
     display: none !important;
