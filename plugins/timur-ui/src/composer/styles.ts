@@ -23,6 +23,10 @@ const SHIELD_CHECK = svgUrl(
 const SHIELD_OFF = svgUrl(
   "<path d='m2 2 20 20'/><path d='M5 5a1 1 0 0 0-1 1v7c0 5 3.5 7.5 7.67 8.94a1 1 0 0 0 .67.01c2.35-.82 4.48-1.97 5.9-3.71'/><path d='M9.309 3.652A12.252 12.252 0 0 0 11.24 2.28a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1v7a9.784 9.784 0 0 1-.08 1.264'/>",
 );
+// Lucide laptop, the icon bb uses for the machine in thread footers.
+const LAPTOP = svgUrl(
+  "<path d='M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z'/><path d='M20.054 15.987H3.946'/>",
+);
 
 export const COMPACT_COMPOSER_CSS = /* css */ `
 /* Editor: cap the height (bb allows up to half the viewport). */
@@ -197,6 +201,17 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
   }
 }
 
+/* Environment picker: a laptop instead of bb's folder, which the project
+   picker next to it already uses. Everywhere, phones included. */
+${NT_FOOTER} button[aria-label="Environment"] svg[data-icon]:not([data-icon="ChevronDown"]) {
+  visibility: hidden;
+}
+${NT_FOOTER} button[aria-label="Environment"] span:has(> svg[data-icon]:not([data-icon="ChevronDown"])) {
+  background-color: currentColor;
+  -webkit-mask: ${LAPTOP} center / contain no-repeat;
+  mask: ${LAPTOP} center / contain no-repeat;
+}
+
 /* A shield in place of the dropdown chevron: shield-off for Full Access
    (no sandbox, no approvals), shield-check for the other modes.
    Applies to thread and new-thread composers, inline or in their own row. */
@@ -273,9 +288,19 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
     max-width: 150px;
   }
   html:not([data-cc-footer-below]) ${NT_PICKERS} > button[aria-label="Environment"] {
-    min-width: 40px;
+    min-width: 80px;
     max-width: 200px;
     flex: 0 1 auto !important;
+  }
+  /* Less room: the short label ("Project checkout", "Worktree") instead of
+     "<machine> · <kind>", so it doesn't truncate to a single letter. */
+  @container promptbox-shell (max-width: 799.98px) {
+    html:not([data-cc-footer-below]) ${NT_PICKERS} > button[aria-label="Environment"] [data-promptbox-full-label] {
+      display: none !important;
+    }
+    html:not([data-cc-footer-below]) ${NT_PICKERS} > button[aria-label="Environment"] [data-promptbox-compact-label] {
+      display: block !important;
+    }
   }
   html:not([data-cc-footer-below]) ${NT_FOOTER} button[aria-label="Permission mode"] [data-promptbox-full-label] {
     display: none !important;
