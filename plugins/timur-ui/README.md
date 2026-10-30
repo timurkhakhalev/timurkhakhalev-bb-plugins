@@ -8,14 +8,15 @@ Makes the BB thread composer shorter, so more of the chat stays on screen.
 
 - **Prompt height cap.** The prompt grows to `editorMaxLines` lines (8 by default) and then scrolls. BB's own limit is half the viewport.
 - **Footer in the action row.** The row under the composer (project, machine, branch, permissions, context) moves into the action row, between the model picker and mic/send. It is anchored to the real controls, so it follows the send button's width (empty, with a send menu, Stop).
-- **Branch chip.** Only the branch is visible. Hovering (or focusing) it opens a card with the project, the machine, and the "new thread in this environment" button. BB's "Copy branch name" tooltip is hidden while you hover the chip, so it doesn't cover the card.
+- **Machine and branch chips.** The machine (environment) and the branch stay visible; in composers narrower than 600px (side chats) the machine shows as its icon. Hovering (or focusing) them opens a card with the project and the "new thread in this environment" button. BB's "Copy branch name" tooltip is hidden while you hover, so it doesn't cover the card. BB itself now hides this footer on wide screens; inline, the plugin shows it whenever the composer is expanded.
+- **Voice input.** While recording, the inline footer hides so it doesn't sit on top of BB's waveform.
 - **Permission control.** BB's short label ("Full" instead of "Full Access") with a shield icon instead of the dropdown chevron: a crossed-out shield for Full Access (no sandbox, no approvals), a shield with a check for the other modes. The icon shows in side chats and when the footer is in its own row too.
 - **Collapse/expand animation.** The composer resizes smoothly when BB collapses or expands it, and the controls fade in. Respects `prefers-reduced-motion`.
 - **Mobile drawer animation.** BB's bottom drawers (model picker, environment, branch) slide up on every open, except the first one after a page load, which appears instantly. The plugin gives that first open a starting position, so it slides up too. Off with `animateCollapse=false` or `prefers-reduced-motion`.
 - **Draft stays open after the keyboard closes (touch devices).** BB collapses the composer when the keyboard's Done button closes the keyboard, squeezing a typed draft into a one-line pill. With a draft, the composer now stays open; tapping outside it, or closing the keyboard on an empty composer, still collapses it.
 - **Optional:** hide the git changes bar (`Untracked · N files, +X -Y`) above the composer.
 
-- **New-thread composer.** Its picker row (project, environment or machine, branch, permissions) moves into the action row the same way. The project picker and the last picker, usually the branch, stay visible; the environment opens in a card on hover, and the card stays open while its dropdown is open. On phones the row stays under the composer, but the branch shows as an icon and the project name truncates, so nothing overlaps the agent-mode button.
+- **New-thread composer.** Its picker row (project, environment or machine, branch, permissions) moves into the action row the same way. All pickers stay visible as chips; when space runs out, only the environment label truncates. On phones the row stays under the composer, but the branch shows as an icon and the project name truncates, so nothing overlaps the agent-mode button.
 
 The same layout applies to side chats. When a composer is narrower than 440px (a phone), the footer keeps BB's own row under it.
 

@@ -8,11 +8,9 @@ const FOOTER =
 // add their own.
 const NT_FOOTER = "[data-new-thread-footer]";
 const NT_PICKERS = `${NT_FOOTER} > :first-child`;
-// The environment picker, the one that moves into the card; the project picker
-// and the last picker (branch) stay visible as chips.
-const NT_CARD_ITEM = ":not(:last-child):not([data-promptbox-project-control])";
-const NT_CARD = `${NT_PICKERS} > ${NT_CARD_ITEM}`;
 const ENV = `${FOOTER} > :first-child > div:has(> [data-promptbox-hide-branch-compact])`;
+// The project and "new thread here", which open in the hover card.
+const ENV_CARD_ITEM = `:is([data-option-display], button[aria-label="New thread in this environment"])`;
 
 // Lucide shield-check / shield-off, used as CSS masks so they take the label colour.
 const svgUrl = (paths: string) =>
@@ -72,6 +70,11 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
     justify-content: flex-end;
     pointer-events: none;
     overflow: visible !important;
+    /* bb hides the footer on wide screens unless it sets
+       data-follow-up-composer-footer-visible (phones only); inline it always shows. */
+    opacity: 1;
+    min-height: 24px;
+    max-height: 24px;
   }
   /* Hug the real controls: the mic/send cluster changes width (send menu,
      stop button), so a fixed offset left a gap or overlapped. */
@@ -96,33 +99,47 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
     overflow: visible !important;
   }
 
-  /* Environment chip: only the branch shows; project, machine, and "new
-     thread here" move into a popover that opens on hover/focus. They stay
-     bb's own elements, so their clicks keep working. */
+  /* Environment: the machine and the branch stay visible; the project and
+     "new thread here" move into a popover that opens on hover/focus. They
+     stay bb's own elements, so their clicks keep working. */
   html:not([data-cc-footer-below]) ${ENV} {
     position: relative;
+    min-width: 0;
     padding-right: 0 !important;
   }
+  /* The machine label gives way first; the branch keeps its width. */
+  html:not([data-cc-footer-below]) ${ENV} > span {
+    min-width: 16px;
+    max-width: 180px !important;
+    flex: 0 1 auto !important;
+  }
+  html:not([data-cc-footer-below]) ${ENV} > span > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   html:not([data-cc-footer-below]) ${ENV} > [data-promptbox-hide-branch-compact] {
-    max-width: 180px;
+    min-width: 0;
+    max-width: 160px;
+    flex: 0 0 auto !important;
   }
   html:not([data-cc-footer-below]) ${ENV}::before,
   html:not([data-cc-footer-below]) ${ENV}::after,
-  html:not([data-cc-footer-below]) ${ENV} > :not([data-promptbox-hide-branch-compact]) {
+  html:not([data-cc-footer-below]) ${ENV} > ${ENV_CARD_ITEM} {
     position: absolute !important;
     visibility: hidden;
     opacity: 0;
     transition: opacity 120ms ease-out, visibility 0s linear 120ms;
     z-index: 1;
   }
-  /* Popover card, right-aligned to the chip, 8px above it. */
+  /* Popover card, right-aligned to the chips, 8px above them. */
   html:not([data-cc-footer-below]) ${ENV}::before {
     content: "";
     box-sizing: border-box;
     right: -6px;
     bottom: calc(100% + 8px);
     width: 256px;
-    height: 70px;
+    height: 40px;
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--popover);
@@ -139,25 +156,27 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
   }
   html:not([data-cc-footer-below]) ${ENV} > [data-option-display] {
     left: calc(100% - 238px);
-    bottom: calc(100% + 42px);
-    max-width: 200px;
-  }
-  html:not([data-cc-footer-below]) ${ENV} > span {
-    left: calc(100% - 238px);
     bottom: calc(100% + 16px);
-    max-width: 228px !important;
+    max-width: 200px;
   }
   html:not([data-cc-footer-below]) ${ENV} > button[aria-label="New thread in this environment"] {
     right: 4px;
-    bottom: calc(100% + 42px);
+    bottom: calc(100% + 14px);
     margin: 0 !important;
   }
   html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within)::before,
   html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within)::after,
-  html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within) > * {
+  html:not([data-cc-footer-below]) ${ENV}:is(:hover, :focus-within) > ${ENV_CARD_ITEM} {
     visibility: visible;
     opacity: 1;
     transition: opacity 120ms ease-out;
+  }
+  /* Side chats and other narrow composers: the machine shows as its icon only,
+     rather than a label cut to one letter. */
+  @container promptbox-shell (max-width: 599.98px) {
+    html:not([data-cc-footer-below]) ${ENV} > span > span {
+      display: none;
+    }
   }
 
   /* Permission mode: bb's short label ("Full") instead of "Full Access". */
@@ -166,6 +185,15 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
   }
   html:not([data-cc-footer-below]) ${FOOTER} button[aria-label="Permission mode"] [data-promptbox-compact-label] {
     display: inline !important;
+  }
+}
+
+/* Voice input: bb swaps the action row for a waveform that spans the whole
+   row, so an inline footer would sit on top of it. Hide it while recording. */
+@container promptbox-shell (min-width: 440px) {
+  html:not([data-cc-footer-below]) [data-follow-up-composer]:has(> * form[data-promptbox-voice-active]) > [data-follow-up-composer-footer],
+  html:not([data-cc-footer-below]) [data-app-composer]:has(> * form[data-promptbox-voice-active]) > ${NT_FOOTER} {
+    visibility: hidden !important;
   }
 }
 
@@ -196,11 +224,9 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
   mask-image: ${SHIELD_OFF};
 }
 
-/* New-thread composer: same idea, but its footer holds real pickers
-   (project, environment/machine, branch). The project and the last picker
-   (the branch once an environment is chosen) stay visible as chips; the
-   environment moves into a card that opens on hover/focus and stays open
-   while its dropdown is open. */
+/* New-thread composer: same idea. Its footer holds real pickers (project,
+   environment/machine, branch); all stay visible as chips, each truncating
+   its label. */
 [data-app-composer]:has(> [data-new-thread-footer]) {
   position: relative;
   anchor-scope: --cc-model, --cc-send;
@@ -234,52 +260,22 @@ export const COMPACT_COMPOSER_CSS = /* css */ `
     min-width: 0;
     overflow: visible !important;
   }
-  html:not([data-cc-footer-below]) ${NT_PICKERS} > :last-child {
+  /* Only the environment label gives way; project and branch keep their
+     (capped) width. The branch picker comes from the git plugin, inside a
+     display: contents root. */
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > button,
+  html:not([data-cc-footer-below]) ${NT_PICKERS} button[aria-label="Branch"] {
+    min-width: 0;
+    max-width: 170px;
+    flex: 0 0 auto !important;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > [data-promptbox-project-control] {
+    max-width: 150px;
+  }
+  html:not([data-cc-footer-below]) ${NT_PICKERS} > button[aria-label="Environment"] {
+    min-width: 40px;
     max-width: 200px;
-  }
-  html:not([data-cc-footer-below]) ${NT_PICKERS} > [data-promptbox-project-control]:not(:last-child) {
-    max-width: 160px;
-  }
-  html:not([data-cc-footer-below]) ${NT_PICKERS}::before,
-  html:not([data-cc-footer-below]) ${NT_PICKERS}::after,
-  html:not([data-cc-footer-below]) ${NT_CARD} {
-    position: absolute !important;
-    visibility: hidden;
-    opacity: 0;
-    transition: opacity 120ms ease-out, visibility 0s linear 120ms;
-    z-index: 1;
-  }
-  html:not([data-cc-footer-below]) ${NT_PICKERS}::before {
-    content: "";
-    box-sizing: border-box;
-    right: -6px;
-    bottom: calc(100% + 8px);
-    width: 280px;
-    height: 42px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--popover);
-    box-shadow: 0 8px 24px -6px rgb(0 0 0 / 0.18);
-    z-index: 0;
-  }
-  html:not([data-cc-footer-below]) ${NT_PICKERS}::after {
-    content: "";
-    right: -6px;
-    bottom: 100%;
-    width: 280px;
-    height: 10px;
-  }
-  html:not([data-cc-footer-below]) ${NT_CARD} {
-    left: calc(100% - 266px);
-    bottom: calc(100% + 13px);
-    max-width: 264px !important;
-  }
-  html:not([data-cc-footer-below]) ${NT_PICKERS}:has(> ${NT_CARD_ITEM}):is(:hover, :focus-within, :has([aria-expanded="true"]))::before,
-  html:not([data-cc-footer-below]) ${NT_PICKERS}:has(> ${NT_CARD_ITEM}):is(:hover, :focus-within, :has([aria-expanded="true"]))::after,
-  html:not([data-cc-footer-below]) ${NT_PICKERS}:is(:hover, :focus-within, :has([aria-expanded="true"])) > ${NT_CARD_ITEM} {
-    visibility: visible;
-    opacity: 1;
-    transition: opacity 120ms ease-out;
+    flex: 0 1 auto !important;
   }
   html:not([data-cc-footer-below]) ${NT_FOOTER} button[aria-label="Permission mode"] [data-promptbox-full-label] {
     display: none !important;

@@ -44,6 +44,6 @@ Chat look (from Beautiful Chat):
 
 Constraints:
 
-- The inline footer applies to thread, side-chat, and new-thread composers, and turns off by itself when the composer is narrower than 440px. On the new-thread screen the project and branch pickers stay visible and the environment opens in a hover card.
+- The inline footer applies to thread, side-chat, and new-thread composers, and turns off by itself when the composer is narrower than 440px. Thread composers show the machine and branch, with the project in a hover card; the new-thread composer shows project, environment, and branch. The inline footer hides while voice input records.
 - Beautiful Chat's own composer styles (prompt bar, tray composer, minimize while generating) are not included; the composer is this plugin's.
 - The plugin styles BB's markup, which isn't a public API. If something looks broken after a BB update, turn off the matching setting or disable the plugin with `bb plugin disable timur-ui`.
