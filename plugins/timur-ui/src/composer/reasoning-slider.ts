@@ -11,6 +11,8 @@ export function startReasoningSlider(signal: AbortSignal): () => void {
     control.className = "cc-reasoning";
     const value = document.createElement("div");
     value.className = "cc-reasoning-value";
+    const modes = document.createElement("div");
+    modes.className = "cc-reasoning-modes";
     const track = document.createElement("div");
     track.className = "cc-reasoning-track";
     const fill = document.createElement("div");
@@ -23,25 +25,46 @@ export function startReasoningSlider(signal: AbortSignal): () => void {
     input.step = "1";
     input.setAttribute("aria-label", "Reasoning effort");
     track.append(fill, ticks, input);
-    control.append(track);
+    control.append(modes, track);
     heading.classList.add("cc-reasoning-heading");
     heading.append(value);
     group.after(control);
     group.setAttribute("data-cc-reasoning-original", "");
 
     let buttons: HTMLButtonElement[] = [];
+    let modeButtons: { source: HTMLButtonElement; button: HTMLButtonElement }[] = [];
     const preview = () => {
       const index = Number(input.value);
       const label = buttons[index]?.getAttribute("aria-label") ?? "";
       value.textContent = label;
       input.setAttribute("aria-valuetext", label);
+      control.removeAttribute("data-inactive");
       control.style.setProperty("--cc-reasoning-position", String(index / Math.max(1, buttons.length - 1)));
     };
     const sync = () => {
-      buttons = Array.from(group.querySelectorAll<HTMLButtonElement>('button[role="radio"]'));
+      const options = Array.from(group.querySelectorAll<HTMLButtonElement>('button[role="radio"]'));
+      const isMode = (button: HTMLButtonElement) => /^(default|none)$/i.test(button.getAttribute("aria-label") ?? "");
+      const special = options.filter(isMode);
+      buttons = options.filter((button) => !isMode(button));
+      if (special.length !== modeButtons.length || special.some((source, index) => source !== modeButtons[index]?.source)) {
+        modeButtons = special.map((source) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.addEventListener("click", () => source.click());
+          return { source, button };
+        });
+        modes.replaceChildren(...modeButtons.map(({ button }) => button));
+      }
+      modes.hidden = special.length === 0;
+      for (const { source, button } of modeButtons) {
+        button.textContent = source.getAttribute("aria-label");
+        button.disabled = source.disabled;
+        button.setAttribute("aria-pressed", String(source.getAttribute("aria-checked") === "true"));
+      }
       input.max = String(Math.max(0, buttons.length - 1));
-      input.disabled = buttons.length < 2 || buttons.some((button) => button.disabled);
-      control.toggleAttribute("data-disabled", input.disabled);
+      input.disabled = buttons.length === 0 || buttons.some((button) => button.disabled);
+      track.hidden = buttons.length === 0;
+      control.toggleAttribute("data-disabled", options.every((button) => button.disabled));
       const selected = buttons.findIndex((button) => button.getAttribute("aria-checked") === "true");
       input.value = String(Math.max(0, selected));
       if (ticks.childElementCount !== buttons.length) {
@@ -49,15 +72,27 @@ export function startReasoningSlider(signal: AbortSignal): () => void {
       }
       preview();
       if (selected < 0) {
-        value.textContent = "Default";
-        input.setAttribute("aria-valuetext", "Default");
+        const label = special.find((button) => button.getAttribute("aria-checked") === "true")?.getAttribute("aria-label") ?? "Default";
+        value.textContent = label;
+        input.setAttribute("aria-valuetext", label);
+        control.setAttribute("data-inactive", "");
       }
     };
     input.addEventListener("input", preview);
-    input.addEventListener("change", () => {
+    const select = () => {
       const button = buttons[Number(input.value)];
       if (button && !button.disabled && button.getAttribute("aria-checked") !== "true") button.click();
       sync();
+    };
+    input.addEventListener("change", select);
+    // A tap on the first stop must also work when the range already holds zero.
+    input.addEventListener("click", select);
+    input.addEventListener("keydown", (event) => {
+      if (!control.hasAttribute("data-inactive")) return;
+      if (!["ArrowRight", "ArrowUp", "ArrowLeft", "ArrowDown", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      input.value = String(event.key === "End" ? buttons.length - 1 : 0);
+      select();
     });
     const observer = new MutationObserver(sync);
     observer.observe(group, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-checked", "disabled", "aria-label"] });
