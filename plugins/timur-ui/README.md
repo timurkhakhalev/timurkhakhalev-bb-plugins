@@ -13,6 +13,7 @@ Makes the BB thread composer shorter, so more of the chat stays on screen.
 - **Permission control.** BB's short label ("Full" instead of "Full Access") with a shield icon instead of the dropdown chevron: a crossed-out shield for Full Access (no sandbox, no approvals), a shield with a check for the other modes. The icon shows in side chats and when the footer is in its own row too.
 - **Collapse/expand animation.** The composer resizes smoothly when BB collapses or expands it, and the controls fade in. Respects `prefers-reduced-motion`.
 - **Mobile drawer animation.** BB's bottom drawers (model picker, environment, branch) slide up on every open, except the first one after a page load, which appears instantly. The plugin gives that first open a starting position, so it slides up too. Off with `animateCollapse=false` or `prefers-reduced-motion`.
+- **Reasoning slider.** The model menu uses a stepped slider with dots and the selected level beside the Reasoning heading. Drag or use arrow keys; available levels and saving come from BB's own controls. Uses the current BB theme on desktop and touch screens.
 - **Draft stays open after the keyboard closes (touch devices).** BB collapses the composer when the keyboard's Done button closes the keyboard, squeezing a typed draft into a one-line pill. With a draft, the composer now stays open; tapping outside it, or closing the keyboard on an empty composer, still collapses it.
 - **Optional:** hide the git changes bar (`Untracked · N files, +X -Y`) above the composer.
 
@@ -54,6 +55,7 @@ Composer (`src/composer/`):
 - `../app.tsx`: a content script injects the stylesheet and starts the animation. An app overlay with no UI mirrors the settings onto `<html>`: `data-cc-footer-below`, `data-cc-no-animate`, `data-cc-allow-keyboard-collapse`, `data-cc-show-git-bar`, the `--cc-editor-max-lines` variable, and Beautiful Chat's `data-bui-loader`, `data-bui-chips`, `data-bui-off`.
 - `collapse-animation.ts`: BB swaps the composer layout in one commit when it toggles `data-promptbox-compact` on the form, so the plugin plays a FLIP animation from the last observed height to the new one with the Web Animations API.
 - `keep-expanded.ts`: after a blur to `<body>` with no recent tap outside the composer, BB waits for the keyboard to close and then collapses. It skips that collapse while the composer contains an open menu (`[aria-haspopup][aria-expanded="true"]`), so the plugin puts a hidden marker with those attributes into the form until the composer is focused again.
+- `reasoning-slider.ts` / `.css`: enhances BB's Reasoning radio group with a native range input, keeps its options and selection in sync, and restores the original group on unload.
 
 Chat look (`src/chat/`), kept close to upstream so changes can be pulled in:
 

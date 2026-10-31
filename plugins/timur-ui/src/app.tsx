@@ -5,11 +5,13 @@
 // and ids, which are steadier than its Tailwind classes, but a bb update can
 // still break them.
 import "./chat/app.css";
+import "./composer/reasoning-slider.css";
 import { useEffect } from "react";
 import { definePluginApp, useSettings } from "@get-bb/plugin-sdk/app";
 import { ATTR_NO_ANIMATE, startCollapseAnimation } from "./composer/collapse-animation";
 import { ATTR_ALLOW_KEYBOARD_COLLAPSE, startKeepExpanded } from "./composer/keep-expanded";
 import { COMPACT_COMPOSER_CSS } from "./composer/styles";
+import { startReasoningSlider } from "./composer/reasoning-slider";
 import { rootAttributes } from "./chat/settings";
 import { mountSpatialTooltips } from "./chat/spatial-tooltip";
 import { mountPhaseSync } from "./chat/phase-sync";
@@ -80,9 +82,11 @@ export default definePluginApp((app) => {
       document.head.appendChild(style);
       const stopAnimation = startCollapseAnimation(signal);
       const stopKeepExpanded = startKeepExpanded(signal);
+      const stopReasoningSlider = startReasoningSlider(signal);
       const remove = () => {
         stopAnimation();
         stopKeepExpanded();
+        stopReasoningSlider();
         style.remove();
       };
       signal.addEventListener("abort", remove, { once: true });
