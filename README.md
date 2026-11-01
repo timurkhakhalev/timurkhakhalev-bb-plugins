@@ -6,7 +6,7 @@ Public collection of plugins for [BB](https://github.com/get-bb/bb).
 
 | Plugin | Description | Status |
 | --- | --- | --- |
-| [Browser Annotate](./plugins/browser-annotate) | Add comments to elements in a native BB Browser tab and send them with screenshots to the current chat. | 0.1.1 |
+| [Browser Annotate](./plugins/browser-annotate) | Comment on elements in a native BB Browser tab and send the comments to the current chat with screenshots and React component names. Also works when the BB server runs on a remote machine. Requires BB 0.48+. | 0.2.0 |
 
 Personal, not in the collection: [Timur UI](./plugins/timur-ui), my own bb look (shorter composer plus Beautiful Chat's chat restyle).
 
@@ -15,8 +15,16 @@ Personal, not in the collection: [Timur UI](./plugins/timur-ui), my own bb look 
 Install a plugin from this repository by its collection name:
 
 ```sh
-bb plugin install git:github.com/timurkhakhalev/timurkhakhalev-bb-plugins@browser-annotate/v0.1.1 --plugin browser-annotate
+bb plugin install git:github.com/timurkhakhalev/timurkhakhalev-bb-plugins@browser-annotate/v0.2.0 --plugin browser-annotate
 ```
+
+To receive compatible releases through `bb plugin update`, install a semver range instead of a fixed tag:
+
+```sh
+bb plugin install "git:https://github.com/timurkhakhalev/timurkhakhalev-bb-plugins.git@semver:browser-annotate/:^0.2.0" --subdirectory plugins/browser-annotate
+```
+
+Browser Annotate 0.2.0 is a major change from 0.1.x, so installs that track `^0.1.0` do not update to it. Remove the old install with `bb plugin remove browser-annotate`, then install 0.2.0. Removing it deletes the plugin's unsent drafts and the history behind the hover cards on annotations already sent.
 
 For local development:
 
