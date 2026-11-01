@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { JSDOM } from "jsdom";
-import { batchSchema, editorDraftSchema, type Batch } from "./contracts.js";
+import { batchSchema, type Batch } from "./contracts.js";
 import { activateExpression, pageCalls, reactProbeExpression, type PageMessage } from "./page-script.js";
 
 const URL = "https://example.test/page";
@@ -34,27 +34,46 @@ function openPage(url = URL) {
     configurable: true,
   });
   const evaluate = (expression: string) => JSON.parse(JSON.stringify(window.eval(expression) ?? null));
-  const click = (selector: string) => {
+  const pointer = (selector: string) => {
     const target = window.document.querySelector(selector);
     if (!target) throw new Error(`missing ${selector}`);
     target.dispatchEvent(new window.MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
   };
-  const lastEditor = () => {
-    const message = [...messages].reverse().find((candidate) => candidate.type === "editor");
-    if (!message || message.type !== "editor") throw new Error("editor did not open");
-    return editorDraftSchema.parse(message.editor);
+  const ui = () => (window as unknown as { __bbAnnotateTestRoot?: ShadowRoot }).__bbAnnotateTestRoot ?? null;
+  const popover = () => {
+    const root = ui();
+    const pop = root?.getElementById("__bbAnnPop") as HTMLElement | null | undefined;
+    return pop && pop.style.display === "block" && pop.childElementCount > 0 ? pop : null;
   };
-  return { window, messages, evaluate, click, lastEditor };
+  const press = (button: Element | null | undefined) => {
+    if (!button) throw new Error("missing button");
+    button.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+  };
+  const button = (label: string) =>
+    [...(popover()?.querySelectorAll("button") ?? [])].find((candidate) => candidate.textContent === label) ?? null;
+  const type = (value: string) => {
+    const comment = popover()?.querySelector("textarea.comment") as HTMLTextAreaElement | null;
+    if (!comment) throw new Error("popover is not open");
+    comment.value = value;
+    comment.dispatchEvent(new window.Event("input", { bubbles: true }));
+  };
+  const snapshot = () => batchSchema.parse(evaluate(pageCalls.snapshot()));
+  return { window, messages, evaluate, pointer, ui, popover, press, button, type, snapshot };
 }
 
-function activate(page: ReturnType<typeof openPage>, restore: Batch | null = null, allowSyntheticInput = true) {
+type Page = ReturnType<typeof openPage>;
+
+function activate(page: Page, restore: Batch | null = null, allowSyntheticInput = true) {
   return page.evaluate(activateExpression({ restore, theme: null, allowSyntheticInput }));
 }
 
-function annotate(page: ReturnType<typeof openPage>, selector: string, comment: string) {
-  page.click(selector);
-  const editor = page.lastEditor();
-  return page.evaluate(pageCalls.commit(editor.id, comment, null)) as { annotationId: string } | null;
+function annotate(page: Page, selector: string, comment: string) {
+  page.pointer(selector);
+  page.type(comment);
+  page.press(page.button("Save"));
+  const committed = [...page.messages].reverse().find((message) => message.type === "committed");
+  if (!committed || committed.type !== "committed") throw new Error("not committed");
+  return committed.annotationId;
 }
 
 afterEach(() => {
@@ -62,17 +81,23 @@ afterEach(() => {
 });
 
 describe("isolated-world page script", () => {
-  test("selection opens the renderer editor and commit produces a valid batch", () => {
+  test("selection opens the in-page popover and Save produces a valid batch", () => {
     const page = openPage();
     expect(activate(page)).toMatchObject({ active: true, count: 0, restored: false, startUrl: URL });
-    page.click("button");
-    const editor = page.lastEditor();
-    expect(editor).toMatchObject({ tag: "button", target: "Continue", annotationId: null, comment: "" });
-    expect(page.evaluate(pageCalls.commit(editor.id, "  Make it green  ", null))).toMatchObject({
-      annotationId: expect.any(String),
-    });
-    expect(page.messages.at(-1)).toEqual({ type: "changed", revision: 1 });
-    const batch = batchSchema.parse(page.evaluate(pageCalls.snapshot()));
+    page.pointer("button");
+    const pop = page.popover();
+    expect(pop?.textContent).toContain("<button>");
+    expect(pop?.textContent).toContain("Continue");
+    expect(page.button("Save")?.hasAttribute("disabled")).toBe(true);
+    page.type("  Make it green  ");
+    expect(page.button("Save")?.hasAttribute("disabled")).toBe(false);
+    page.press(page.button("Save"));
+    expect(page.messages.slice(-2)).toEqual([
+      { type: "changed", revision: 1 },
+      { type: "committed", annotationId: expect.any(String) },
+    ]);
+    expect(page.popover()?.classList.contains("on") ?? false).toBe(false);
+    const batch = page.snapshot();
     expect(batch).toMatchObject({ url: URL, title: "Checkout" });
     expect(batch.annotations).toHaveLength(1);
     expect(batch.annotations[0]).toMatchObject({
@@ -86,78 +111,95 @@ describe("isolated-world page script", () => {
     expect(page.evaluate(pageCalls.state())).toMatchObject({ active: true, count: 1 });
   });
 
-  test("a stale editor id or empty comment does not commit", () => {
+  test("Enter saves and Shift+Enter does not", () => {
     const page = openPage();
     activate(page);
-    page.click("button");
-    const editor = page.lastEditor();
-    expect(page.evaluate(pageCalls.commit("editor_other", "x", null))).toBeNull();
-    expect(page.evaluate(pageCalls.commit(editor.id, "   ", null))).toBeNull();
-    expect(batchSchema.parse(page.evaluate(pageCalls.snapshot())).annotations).toHaveLength(0);
+    page.pointer("button");
+    page.type("Via keyboard");
+    const comment = page.popover()?.querySelector("textarea.comment");
+    comment?.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
+    expect(page.snapshot().annotations).toHaveLength(0);
+    comment?.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(page.snapshot().annotations).toMatchObject([{ comment: "Via keyboard" }]);
   });
 
-  test("synthetic page events cannot select elements", () => {
+  test("synthetic page events cannot select or save", () => {
     const page = openPage();
     activate(page, null, false);
-    page.click("button");
-    expect(page.messages.filter((message) => message.type === "editor")).toHaveLength(0);
+    page.pointer("button");
+    expect(page.ui()).toBeNull();
+    expect(page.snapshot().annotations).toHaveLength(0);
   });
 
-  test("clicking the page while editing closes the editor and tells the renderer", () => {
+  test("clicking the page while editing closes the popover without saving", () => {
     const page = openPage();
     activate(page);
-    page.click("button");
-    const editor = page.lastEditor();
-    page.click("#note");
-    expect(page.messages.at(-1)).toEqual({ type: "editor-closed", editorId: editor.id });
-    expect(page.evaluate(pageCalls.commit(editor.id, "late", null))).toBeNull();
+    page.pointer("button");
+    page.type("Discard me");
+    page.pointer("#note");
+    expect(page.snapshot().annotations).toHaveLength(0);
+    page.pointer("#note");
+    expect(page.popover()?.textContent).toContain("<p>");
   });
 
-  test("editing bumps the version so a new screenshot is requested", () => {
+  test("editing from a pin bumps the version and shows Update and Delete", () => {
     const page = openPage();
     activate(page);
-    const saved = annotate(page, "button", "First");
-    if (!saved) throw new Error("not saved");
-    expect(page.evaluate(pageCalls.open(saved.annotationId))).toBe(true);
-    const editor = page.lastEditor();
-    expect(editor).toMatchObject({ annotationId: saved.annotationId, comment: "First" });
-    page.evaluate(pageCalls.commit(editor.id, "Second", null));
-    const batch = batchSchema.parse(page.evaluate(pageCalls.snapshot()));
-    expect(batch.annotations).toMatchObject([{ id: saved.annotationId, version: 2, comment: "Second" }]);
+    const id = annotate(page, "button", "First");
+    expect(page.evaluate(pageCalls.open(id))).toBe(true);
+    expect(page.button("Delete")).not.toBeNull();
+    expect((page.popover()?.querySelector("textarea.comment") as HTMLTextAreaElement).value).toBe("First");
+    page.type("Second");
+    page.press(page.button("Update"));
+    expect(page.snapshot().annotations).toMatchObject([{ id, version: 2, comment: "Second" }]);
   });
 
-  test("removing an annotation renumbers the rest and bumps their versions", () => {
+  test("Delete in the popover removes the annotation and renumbers the rest", () => {
     const page = openPage();
     activate(page);
     const first = annotate(page, "button", "First");
     annotate(page, "#note", "Second");
-    if (!first) throw new Error("not saved");
-    expect(page.evaluate(pageCalls.remove(first.annotationId))).toBe(true);
-    const batch = batchSchema.parse(page.evaluate(pageCalls.snapshot()));
-    expect(batch.annotations).toMatchObject([{ comment: "Second", version: 2 }]);
+    page.evaluate(pageCalls.open(first));
+    page.press(page.button("Delete"));
+    expect(page.snapshot().annotations).toMatchObject([{ comment: "Second", version: 2 }]);
   });
 
-  test("design preview applies on the page and cancel restores it", () => {
+  test("design settings preview on the page, Save keeps only changes, Cancel restores", () => {
     const page = openPage();
     activate(page);
-    page.click("#note");
-    const editor = page.lastEditor();
-    const design = {
-      ...editor.designChange,
-      text: { previousValue: "Some sample text", value: "Changed text" },
-    };
-    expect(page.evaluate(pageCalls.preview(editor.id, 1, design))).toBe(true);
-    expect(page.window.document.querySelector("#note")?.textContent).toBe("Changed text");
-    expect(page.evaluate(pageCalls.preview(editor.id, 1, design))).toBe(false);
-    expect(page.evaluate(pageCalls.cancelEditor(editor.id))).toBe(true);
-    expect(page.window.document.querySelector("#note")?.textContent).toBe("Some sample text");
+    page.pointer("#note");
+    const pop = page.popover();
+    const textField = pop?.querySelector(".settings textarea.in") as HTMLTextAreaElement;
+    textField.value = "Changed text";
+    textField.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    return new Promise<void>((resolve) => page.window.setTimeout(resolve, 5)).then(() => {
+      expect(page.window.document.querySelector("#note")?.textContent).toBe("Changed text");
+      expect(page.button("Save")?.hasAttribute("disabled")).toBe(false);
+      page.press(page.button("Cancel"));
+      expect(page.window.document.querySelector("#note")?.textContent).toBe("Some sample text");
+
+      page.pointer("#note");
+      const again = page.popover()?.querySelector(".settings textarea.in") as HTMLTextAreaElement;
+      again.value = "Saved text";
+      again.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+      page.press(page.button("Save"));
+      expect(page.snapshot().annotations[0]).toMatchObject({
+        comment: "",
+        designChange: { text: { previousValue: "Some sample text", value: "Saved text" }, declarations: [] },
+      });
+    });
   });
 
-  test("Escape turns the picker off, removes page nodes and reports cancel", () => {
+  test("Escape closes the popover first, then turns the picker off", () => {
     const page = openPage();
     activate(page);
     annotate(page, "button", "Keep me");
-    page.window.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    page.pointer("#note");
+    const escape = () =>
+      page.window.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    escape();
+    expect(page.evaluate(pageCalls.state())).toMatchObject({ active: true, count: 1 });
+    escape();
     expect(page.messages.at(-1)).toEqual({ type: "cancel" });
     expect(page.window.document.getElementById("__bbAnnRoot")).toBeNull();
     expect(page.evaluate(pageCalls.state())).toBeNull();
@@ -167,11 +209,11 @@ describe("isolated-world page script", () => {
     const source = openPage();
     activate(source);
     annotate(source, "button", "Restored");
-    const batch = batchSchema.parse(source.evaluate(pageCalls.snapshot()));
+    const batch = source.snapshot();
 
     const same = openPage();
     expect(activate(same, batch)).toMatchObject({ restored: true, count: 1 });
-    expect(batchSchema.parse(same.evaluate(pageCalls.snapshot())).annotations).toMatchObject([
+    expect(same.snapshot().annotations).toMatchObject([
       { id: batch.annotations[0].id, version: 1, comment: "Restored" },
     ]);
 
@@ -182,9 +224,8 @@ describe("isolated-world page script", () => {
   test("React components set by the renderer are part of the snapshot", () => {
     const page = openPage();
     activate(page);
-    const saved = annotate(page, "button", "React");
-    if (!saved) throw new Error("not saved");
-    expect(page.evaluate(pageCalls.tagForProbe(saved.annotationId, "probe1"))).toBe(true);
+    const id = annotate(page, "button", "React");
+    expect(page.evaluate(pageCalls.tagForProbe(id, "probe1"))).toBe(true);
     const button = page.window.document.querySelector("button") as unknown as Record<string, unknown>;
     button["__reactFiber$test"] = {
       type: "button",
@@ -202,8 +243,8 @@ describe("isolated-world page script", () => {
       ],
     });
     expect(page.window.document.querySelector("[data-bb-annotate-probe]")).toBeNull();
-    page.evaluate(pageCalls.setComponents(saved.annotationId, probe.components));
-    expect(batchSchema.parse(page.evaluate(pageCalls.snapshot())).annotations[0].components).toEqual(probe.components);
+    page.evaluate(pageCalls.setComponents(id, probe.components));
+    expect(page.snapshot().annotations[0].components).toEqual(probe.components);
   });
 
   test("capturing hides hover chrome but keeps markers", () => {

@@ -127,20 +127,6 @@ export const batchSchema = z
   .strict();
 export type Batch = z.infer<typeof batchSchema>;
 
-export const editorDraftSchema = z
-  .object({
-    id: idSchema,
-    rect: rectSchema,
-    annotationId: idSchema.nullable(),
-    viewport: z.object({ width: z.number().positive(), height: z.number().positive() }).strict(),
-    tag: z.string().max(64),
-    target: z.string().max(1000),
-    comment: z.string().max(4000),
-    designChange: designChangeSchema,
-  })
-  .strict();
-export type EditorDraft = z.infer<typeof editorDraftSchema>;
-
 export const liveAnnotationSchema = z
   .object({
     id: idSchema,

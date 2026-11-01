@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   definePluginApp,
@@ -13,10 +13,8 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import {
   batchSchema,
-  editorDraftSchema,
   reactComponentSchema,
   type DesignChange,
-  type EditorDraft,
   type LiveAnnotation,
   type rpcContract,
 } from "./contracts.js";
@@ -83,14 +81,12 @@ const pageStateSchema = z
     startUrl: z.string(),
   })
   .passthrough();
-const commitResultSchema = z.object({ annotationId: z.string().min(1) }).nullable();
 const probeResultSchema = z
   .object({ components: z.array(reactComponentSchema).max(12) })
   .nullable();
 const pageMessageSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("editor"), editor: editorDraftSchema }),
-  z.object({ type: z.literal("editor-closed"), editorId: z.string() }),
   z.object({ type: z.literal("changed"), revision: z.number() }),
+  z.object({ type: z.literal("committed"), annotationId: z.string().min(1).max(256) }),
   z.object({ type: z.literal("cancel") }),
 ]);
 
@@ -112,215 +108,9 @@ function readTheme(): PageTheme | null {
     text: color("--popover-foreground", "#e8eaf0"),
     muted: color("--muted-foreground", "#9aa0ad"),
     accent: "#3b82f6",
+    border: color("--border", "rgba(255,255,255,.12)"),
+    field: color("--muted", "rgba(255,255,255,.06)"),
   };
-}
-
-const designGroups = [
-  { title: "Content", properties: ["text", "color", "background-color", "opacity"] },
-  { title: "Typography", properties: ["font-family", "font-size", "font-weight"] },
-  { title: "Border", properties: ["border-radius", "border-color", "border-width"] },
-  { title: "Dimensions", properties: ["width", "height"] },
-  { title: "Padding", properties: ["padding-top", "padding-right", "padding-bottom", "padding-left"] },
-  { title: "Margin", properties: ["margin-top", "margin-right", "margin-bottom", "margin-left"] },
-  { title: "Flex layout", properties: ["flex-direction", "justify-content", "align-items", "gap", "row-gap", "column-gap"] },
-] as const;
-
-const designLabels: Record<string, string> = {
-  text: "Text",
-  color: "Text color",
-  "background-color": "Background",
-  opacity: "Opacity",
-  "font-family": "Font",
-  "font-size": "Font size",
-  "font-weight": "Font weight",
-  "border-radius": "Border radius",
-  "border-color": "Border color",
-  "border-width": "Border width",
-  width: "Width",
-  height: "Height",
-  "padding-top": "Padding top",
-  "padding-right": "Padding right",
-  "padding-bottom": "Padding bottom",
-  "padding-left": "Padding left",
-  "margin-top": "Margin top",
-  "margin-right": "Margin right",
-  "margin-bottom": "Margin bottom",
-  "margin-left": "Margin left",
-  "flex-direction": "Direction",
-  "justify-content": "Distribution",
-  "align-items": "Alignment",
-  gap: "Spacing",
-  "row-gap": "Vertical gap",
-  "column-gap": "Horizontal gap",
-};
-
-const selectValues: Record<string, string[]> = {
-  "font-weight": ["100", "200", "300", "400", "500", "600", "700", "800", "900"],
-  "flex-direction": ["row", "row-reverse", "column", "column-reverse"],
-  "justify-content": ["flex-start", "center", "flex-end", "space-between", "space-around", "space-evenly"],
-  "align-items": ["flex-start", "center", "flex-end", "stretch", "baseline"],
-};
-
-const pixelProperties = new Set([
-  "font-size", "border-radius", "border-width", "width", "height",
-  "padding-top", "padding-right", "padding-bottom", "padding-left",
-  "margin-top", "margin-right", "margin-bottom", "margin-left", "gap", "row-gap", "column-gap",
-]);
-const colorProperties = new Set(["color", "background-color", "border-color"]);
-
-function numericValue(value: string) {
-  const number = Number.parseFloat(value);
-  return Number.isFinite(number) ? String(Math.round(number * 100) / 100) : "0";
-}
-
-function rgbToHex(value: string) {
-  const match = value.match(/^rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/i);
-  if (!match) return /^#[0-9a-f]{6}$/i.test(value) ? value : "#000000";
-  return `#${[match[1], match[2], match[3]]
-    .map((part) => Math.max(0, Math.min(255, Number(part))).toString(16).padStart(2, "0"))
-    .join("")}`;
-}
-
-function changedDesign(design: DesignChange): DesignChange | null {
-  const declarations = design.declarations.filter((change) => change.value !== change.previousValue);
-  const text = design.text && design.text.value !== design.text.previousValue
-    ? { ...design.text }
-    : null;
-  return declarations.length > 0 || text ? { declarations, text } : null;
-}
-
-function DesignEditor({
-  design,
-  onChange,
-}: {
-  design: DesignChange;
-  onChange: (design: DesignChange) => void;
-}) {
-  const declarationMap = new Map(
-    design.declarations.map((declaration) => [declaration.property, declaration]),
-  );
-  const updateText = (value: string) => {
-    if (!design.text) return;
-    onChange({ ...design, text: { ...design.text, value: value.slice(0, 4000) } });
-  };
-  const updateDeclaration = (property: string, value: string) => {
-    onChange({
-      ...design,
-      declarations: design.declarations.map((declaration) =>
-        declaration.property === property
-          ? { ...declaration, value: value.slice(0, 1000) }
-          : declaration,
-      ),
-    });
-  };
-  const reset = () => onChange({
-    text: design.text ? { ...design.text, value: design.text.previousValue } : null,
-    declarations: design.declarations.map((declaration) => ({
-      ...declaration,
-      value: declaration.previousValue,
-    })),
-  });
-
-  return (
-    <div className="min-h-0 overflow-y-auto px-3 pb-2" style={{ maxHeight: 240 }}>
-      {changedDesign(design) ? <div className="flex justify-end">
-        <button
-          type="button"
-          className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground"
-          onClick={reset}
-        >
-          Reset all
-        </button>
-      </div> : null}
-      {designGroups.map((group) => {
-        const properties = group.properties.filter((property) =>
-          property === "text" ? Boolean(design.text) : declarationMap.has(property),
-        );
-        if (properties.length === 0) return null;
-        return (
-          <section key={group.title} className="border-b border-border py-2 last:border-b-0">
-            {group.title !== "Content" ? <h3 className="mb-1 text-[11px] font-medium text-muted-foreground">{group.title}</h3> : null}
-            <div className="space-y-1">
-              {properties.map((property) => {
-                const value = property === "text"
-                  ? design.text?.value ?? ""
-                  : declarationMap.get(property)?.value ?? "";
-                const setValue = (next: string) => {
-                  if (property === "text") updateText(next);
-                  else updateDeclaration(property, next);
-                };
-                const options = selectValues[property];
-                return (
-                  <label
-                    key={property}
-                    className="grid min-h-8 grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] items-center gap-2 text-xs"
-                  >
-                    <span className="truncate text-muted-foreground">{designLabels[property]}</span>
-                    {property === "text" ? (
-                      <textarea
-                        value={value}
-                        rows={1}
-                        maxLength={4000}
-                        className="min-w-0 resize-none overflow-x-hidden overflow-y-auto whitespace-pre rounded-md border border-border bg-transparent px-2 py-1 leading-4 text-foreground [field-sizing:content] [block-size:1.75rem] [min-block-size:1.75rem] [max-block-size:1.75rem] focus:whitespace-pre-wrap focus:[overflow-wrap:anywhere] focus:[block-size:auto] focus:[max-block-size:calc(3lh+0.5rem+2px)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
-                        onChange={(event) => setValue(event.target.value)}
-                      />
-                    ) : colorProperties.has(property) ? (
-                      <span className="grid grid-cols-[2rem_minmax(0,1fr)] gap-1.5">
-                        <input
-                          type="color"
-                          value={rgbToHex(value)}
-                          aria-label={`${designLabels[property]} picker`}
-                          className="h-7 w-8 cursor-pointer rounded-md border border-border bg-transparent p-1"
-                          onChange={(event) => setValue(event.target.value)}
-                        />
-                        <input
-                          value={value}
-                          className="h-7 min-w-0 rounded-md border border-border bg-transparent px-2 text-foreground outline-none focus:border-ring"
-                          onChange={(event) => setValue(event.target.value)}
-                        />
-                      </span>
-                    ) : options ? (
-                      <select
-                        value={value}
-                        className="h-7 min-w-0 rounded-md border border-border bg-transparent px-2 text-foreground outline-none focus:border-ring"
-                        onChange={(event) => setValue(event.target.value)}
-                      >
-                        {!options.includes(value) ? <option value={value}>{value}</option> : null}
-                        {options.map((option) => <option key={option}>{option}</option>)}
-                      </select>
-                    ) : (
-                      <input
-                        type={property === "opacity" || pixelProperties.has(property) ? "number" : "text"}
-                        min={property === "opacity" ? 0 : undefined}
-                        max={property === "opacity" ? 1 : undefined}
-                        step={property === "opacity" ? 0.05 : pixelProperties.has(property) ? 1 : undefined}
-                        value={property === "opacity" || pixelProperties.has(property) ? numericValue(value) : value}
-                        className="h-7 min-w-0 rounded-md border border-border bg-transparent px-2 text-foreground outline-none focus:border-ring"
-                        onChange={(event) => {
-                          const next = event.target.value;
-                          setValue(pixelProperties.has(property) ? `${next || "0"}px` : next);
-                        }}
-                      />
-                    )}
-                  </label>
-                );
-              })}
-            </div>
-          </section>
-        );
-      })}
-    </div>
-  );
-}
-
-function findBrowserNavigation(element: Element | null): Element | null {
-  while (element) {
-    const navigation = element.closest('[aria-label="Browser navigation"]');
-    if (navigation) return navigation;
-    const root = element.getRootNode();
-    element = root instanceof ShadowRoot ? root.host : null;
-  }
-  return null;
 }
 
 function LoadingLabel({ children }: { children: React.ReactNode }) {
@@ -333,6 +123,8 @@ function LoadingLabel({ children }: { children: React.ReactNode }) {
   </span>;
 }
 
+const MOTION = "transition-[background-color,color,opacity,transform,max-width] duration-200 ease-[cubic-bezier(.2,.8,.2,1)] motion-reduce:transition-none";
+
 function BrowserAnnotateAction({
   threadId,
   tabId,
@@ -341,41 +133,25 @@ function BrowserAnnotateAction({
 }: ExperimentalPluginBrowserToolbarActionProps) {
   const tooltipId = useId();
   const rpc = useRpc<typeof rpcContract>();
-  const commentRef = useRef<HTMLTextAreaElement | null>(null);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
   const pageRef = useRef<ExperimentalPluginBrowserPage | null>(page);
   pageRef.current = page;
   const activeRef = useRef(false);
   const batchIdRef = useRef<string | null>(null);
-  const startUrlRef = useRef<string | null>(null);
   const activatingRef = useRef<Promise<void> | null>(null);
   const syncTailRef = useRef<Promise<void>>(Promise.resolve());
   const syncQueuedRef = useRef(false);
-  const previewRevisionRef = useRef(0);
   const [active, setActive] = useState(false);
   const [count, setCount] = useState(0);
-  const [editor, setEditor] = useState<EditorDraft | null>(null);
-  const [comment, setComment] = useState("");
-  const [design, setDesign] = useState<DesignChange | null>(null);
-  const [expanded, setExpanded] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [missingCaptures, setMissingCaptures] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [toolbarContainer, setToolbarContainer] = useState<HTMLDivElement | null>(null);
   const busy = pendingAction !== null;
 
   const evaluate = useCallback(async (expression: string, world?: "main") => {
     const current = pageRef.current;
     if (!current) throw new Error("Annotate works in Browser tabs of the desktop app");
     return current.evaluate(expression, world ? { world } : undefined);
-  }, []);
-
-  const closeEditor = useCallback(() => {
-    setEditor(null);
-    setExpanded(false);
-    setComment("");
-    setDesign(null);
   }, []);
 
   /** Push the page's annotations to the server and screenshot new versions. */
@@ -391,8 +167,8 @@ function BrowserAnnotateAction({
     if (missing.length === 0) return;
     setCapturing(true);
     try {
-      // Let the page repaint markers after the editor strip collapses.
-      await sleep(160);
+      // Let the popover fade out and markers settle before the screenshot.
+      await sleep(240);
       await evaluate(pageCalls.setCapturing(true));
       const { captured } = await rpc.call("capture", { threadId, tabId, batchId, annotations: missing });
       setMissingCaptures(missing.length - captured.length);
@@ -418,12 +194,24 @@ function BrowserAnnotateAction({
     return next;
   }, [runSync]);
 
+  const probeComponents = useCallback(async (annotationId: string) => {
+    try {
+      const token = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      if ((await evaluate(pageCalls.tagForProbe(annotationId, token))) !== true) return;
+      const probe = probeResultSchema.safeParse(await evaluate(reactProbeExpression(token), "main"));
+      if (probe.success && probe.data && probe.data.components.length > 0) {
+        await evaluate(pageCalls.setComponents(annotationId, probe.data.components));
+      }
+    } catch {
+      // React names are a hint; the annotation is useful without them.
+    }
+  }, [evaluate]);
+
   const deactivatePage = useCallback(async () => {
     activeRef.current = false;
     setActive(false);
-    closeEditor();
     await evaluate(pageCalls.cleanup()).catch(() => undefined);
-  }, [closeEditor, evaluate]);
+  }, [evaluate]);
 
   const activate = useCallback(async (pageUrl: string) => {
     if (activatingRef.current) return activatingRef.current;
@@ -438,7 +226,6 @@ function BrowserAnnotateAction({
       batchIdRef.current = batch && !state.restored
         ? `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`
         : batchId;
-      startUrlRef.current = state.startUrl;
       activeRef.current = true;
       setActive(true);
       setCount(state.count);
@@ -453,31 +240,24 @@ function BrowserAnnotateAction({
     }
   }, [evaluate, rpc, scheduleSync, threadId]);
 
-  // Page messages: selection opened the editor, page closed it, batch changed, Escape.
+  // Page messages: batch changed, an annotation was saved, Escape.
   useEffect(() => {
     if (!page) return;
     return page.onMessage((data: JsonValue) => {
       const parsed = pageMessageSchema.safeParse(data);
       if (!parsed.success || !activeRef.current) return;
       const message = parsed.data;
-      if (message.type === "editor") {
-        previewRevisionRef.current = 0;
-        setEditor(message.editor);
-        setComment(message.editor.comment);
-        setDesign(message.editor.designChange);
-        setExpanded(false);
-        setErrorMessage(null);
-      } else if (message.type === "editor-closed") {
-        setEditor((current) => (current?.id === message.editorId ? null : current));
-      } else if (message.type === "changed") {
+      if (message.type === "changed") {
         void scheduleSync();
+      } else if (message.type === "committed") {
+        setErrorMessage(null);
+        void probeComponents(message.annotationId).then(() => scheduleSync());
       } else if (message.type === "cancel") {
         activeRef.current = false;
         setActive(false);
-        closeEditor();
       }
     });
-  }, [closeEditor, page, scheduleSync]);
+  }, [page, probeComponents, scheduleSync]);
 
   // Reload or navigation drops the page script; restore the draft for the new document.
   useEffect(() => {
@@ -490,7 +270,6 @@ function BrowserAnnotateAction({
         if (stopped || !activeRef.current) return;
         const state = raw === null ? null : pageStateSchema.parse(raw as PageState);
         if (state && state.url === state.startUrl) return;
-        closeEditor();
         if (state) await evaluate(pageCalls.cleanup()).catch(() => undefined);
         await syncTailRef.current.catch(() => undefined);
         await activate(state?.url ?? url);
@@ -504,7 +283,7 @@ function BrowserAnnotateAction({
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [activate, active, closeEditor, evaluate, page, url]);
+  }, [activate, active, evaluate, page, url]);
 
   // Leaving the tab or thread turns the picker off; the draft stays stored.
   useEffect(() => () => {
@@ -540,48 +319,6 @@ function BrowserAnnotateAction({
     ),
   );
 
-  // Live design preview on the page.
-  useEffect(() => {
-    if (!editor || !design) return;
-    const revision = ++previewRevisionRef.current;
-    const timer = window.setTimeout(() => {
-      void evaluate(pageCalls.preview(editor.id, revision, design)).catch((error: unknown) => {
-        setErrorMessage(errorText(error, "Could not preview design changes"));
-      });
-    }, 60);
-    return () => window.clearTimeout(timer);
-  }, [design, editor, evaluate]);
-
-  // Reserve layout space above the page: DOM cannot paint over the native view.
-  useLayoutEffect(() => {
-    if (!active) return;
-    const navigation = findBrowserNavigation(buttonRef.current);
-    const viewport = navigation?.parentElement?.lastElementChild;
-    if (!viewport) return;
-    const container = document.createElement("div");
-    container.style.cssText = "flex:none;position:relative;min-width:0";
-    viewport.before(container);
-    setToolbarContainer(container);
-    return () => {
-      container.remove();
-      setToolbarContainer(null);
-    };
-  }, [active]);
-
-  // Selecting an element focuses the page; pull keyboard focus into the editor.
-  useEffect(() => {
-    if (!editor) return;
-    const frame = requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        const input = commentRef.current;
-        if (!input?.isConnected) return;
-        window.focus();
-        input.focus({ preventScroll: true });
-      }),
-    );
-    return () => cancelAnimationFrame(frame);
-  }, [editor?.id]);
-
   const run = useCallback(async (label: string, action: () => Promise<void>, fallback: string) => {
     if (pendingAction) return;
     setPendingAction(label);
@@ -604,51 +341,6 @@ function BrowserAnnotateAction({
     }
   }, "Could not start annotating");
 
-  const saveEditor = () => {
-    if (!editor || !design) return;
-    const editorId = editor.id;
-    return run("Saving…", async () => {
-      const result = commitResultSchema.parse(
-        await evaluate(pageCalls.commit(editorId, comment, changedDesign(design))),
-      );
-      if (!result) throw new Error("The selected element is no longer available");
-      closeEditor();
-      await probeComponents(result.annotationId);
-      await scheduleSync();
-    }, "Could not save annotation");
-  };
-
-  const probeComponents = async (annotationId: string) => {
-    try {
-      const token = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-      if ((await evaluate(pageCalls.tagForProbe(annotationId, token))) !== true) return;
-      const probe = probeResultSchema.safeParse(await evaluate(reactProbeExpression(token), "main"));
-      if (probe.success && probe.data && probe.data.components.length > 0) {
-        await evaluate(pageCalls.setComponents(annotationId, probe.data.components));
-      }
-    } catch {
-      // React names are a hint; the annotation is useful without them.
-    }
-  };
-
-  const cancelEditor = () => {
-    if (!editor) return;
-    const editorId = editor.id;
-    closeEditor();
-    void evaluate(pageCalls.cancelEditor(editorId)).catch(() => undefined);
-  };
-
-  const deleteEditor = () => {
-    if (!editor?.annotationId) return;
-    const annotationId = editor.annotationId;
-    return run("Deleting…", async () => {
-      if ((await evaluate(pageCalls.remove(annotationId))) !== true) {
-        throw new Error("The annotation is no longer available");
-      }
-      closeEditor();
-    }, "Could not delete annotation");
-  };
-
   const send = () => run("Sending…", async () => {
     await scheduleSync();
     const batchId = batchIdRef.current;
@@ -658,19 +350,18 @@ function BrowserAnnotateAction({
     await deactivatePage();
   }, "Could not send annotations");
 
-  const designChanged = design ? changedDesign(design) : null;
-  const canSave = Boolean(editor && (comment.trim().length > 0 || designChanged));
-  const actionLabel = pendingAction ?? (page === null
+  const sending = pendingAction === "Sending…";
+  const showSend = active && (count > 0 || sending);
+  const actionLabel = errorMessage ?? pendingAction ?? (page === null
     ? "Annotate works in Browser tabs of the desktop app"
     : active ? "Stop annotating (Esc)" : "Annotate page elements");
 
   return (
-    <>
+    <span className="inline-flex shrink-0 items-center gap-1">
       <span className="group relative inline-flex shrink-0">
         <button
-          ref={buttonRef}
           type="button"
-          className={`relative inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 ${active ? "bg-card text-blue-500" : errorMessage && !active ? "text-destructive" : "text-muted-foreground hover:text-foreground"}`}
+          className={`relative inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs ${MOTION} hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:scale-[.96] disabled:opacity-40 ${active ? "bg-blue-500/10 text-blue-500" : errorMessage ? "text-destructive" : "text-muted-foreground hover:text-foreground"}`}
           aria-label={actionLabel}
           aria-describedby={tooltipId}
           aria-pressed={active}
@@ -678,104 +369,37 @@ function BrowserAnnotateAction({
           disabled={busy || page === null}
           onClick={() => void toggle()}
         >
-          {busy && !active ? <LoadingLabel><span className="hidden xl:inline">{pendingAction}</span></LoadingLabel> : <>
+          {busy && !sending ? <LoadingLabel><span className="hidden xl:inline">{pendingAction}</span></LoadingLabel> : <>
             {annotateIcon}
             <span className="hidden xl:inline">{active ? "Annotating" : "Annotate"}</span>
           </>}
-          {count > 0 && active ? (
-            <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-500 px-1 text-[10px] font-semibold leading-none text-white">
-              {count}
-            </span>
-          ) : null}
+          <span
+            aria-hidden
+            className={`absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-500 px-1 text-[10px] font-semibold leading-none text-white shadow-sm transition-[opacity,transform] duration-300 ease-[cubic-bezier(.34,1.56,.64,1)] motion-reduce:transition-none ${active && count > 0 ? "scale-100 opacity-100" : "scale-50 opacity-0"}`}
+          >
+            {count || ""}
+          </span>
         </button>
         <span
           id={tooltipId}
           role="tooltip"
-          className="pointer-events-none invisible absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+          className="pointer-events-none invisible absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 translate-x-1 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow-md transition-[opacity,transform] duration-150 ease-out group-hover:visible group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-x-0 group-focus-within:opacity-100 motion-reduce:transition-none"
         >
-          {errorMessage && !active ? errorMessage : actionLabel}
+          {actionLabel}
         </span>
       </span>
-      {active && toolbarContainer ? createPortal(
-        <div data-bb-plugin-root="" data-bb-plugin="browser-annotate" className="border-b border-border bg-background">
-          <div className="flex h-10 items-center gap-3 px-3 text-foreground">
-            <span className="text-sm font-semibold tracking-[-0.01em]">Annotate Page</span>
-            <span className="text-xs text-muted-foreground">
-              {editor ? `Commenting on <${editor.tag}>` : count > 0 ? `${count} saved · click another element` : "Click an element to comment"}
-            </span>
-            {errorMessage ? <span role="status" className="min-w-0 truncate text-xs text-destructive">{errorMessage}</span> : null}
-            <span className="ml-auto" />
-            <button
-              type="button"
-              className="h-8 min-w-[4.5rem] rounded-lg bg-blue-500 px-3.5 text-sm font-semibold text-white transition-colors hover:bg-blue-400 active:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/35"
-              disabled={busy || Boolean(editor) || count === 0}
-              title={missingCaptures > 0 && !capturing ? "Some screenshots failed; they are retried on send" : undefined}
-              onClick={() => void send()}
-            >
-              {pendingAction === "Sending…" ? <LoadingLabel>Sending…</LoadingLabel> : capturing ? <LoadingLabel>Capturing…</LoadingLabel> : "Send"}
-            </button>
-          </div>
-          {editor && design ? (
-            <div
-              role="dialog"
-              aria-label={`Annotate ${editor.target}`}
-              aria-busy={busy}
-              className="border-t border-border bg-popover text-popover-foreground"
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  cancelEditor();
-                }
-              }}
-            >
-              <div className="flex items-center gap-2 px-2 py-1.5">
-                <button type="button" aria-label={expanded ? "Hide element settings" : "Show element settings"} aria-expanded={expanded} disabled={busy} onClick={() => setExpanded((value) => !value)} className={`flex size-8 shrink-0 items-center justify-center rounded-full hover:bg-state-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${expanded || designChanged ? "text-blue-500" : "text-muted-foreground"}`}>
-                  <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="size-4"><path d="M3 6h8m4 0h6M3 12h3m4 0h11M3 18h11m4 0h3"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg>
-                </button>
-                <span className="max-w-40 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" title={editor.target}>
-                  {editor.target}
-                </span>
-                <textarea
-                  ref={commentRef}
-                  value={comment}
-                  disabled={busy}
-                  maxLength={4000}
-                  rows={1}
-                  placeholder={expanded ? "Describe these changes…" : "Add a comment…"}
-                  aria-label="Annotation comment"
-                  style={{ minHeight: 32, maxHeight: 96, margin: 0, padding: "6px 0", lineHeight: "20px", border: 0, boxSizing: "border-box" }}
-                  className="min-w-0 flex-1 resize-none bg-transparent text-sm text-foreground outline-none [field-sizing:content] placeholder:text-muted-foreground"
-                  onChange={(event) => setComment(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (!event.shiftKey && !event.nativeEvent.isComposing && event.key === "Enter" && canSave) {
-                      event.preventDefault();
-                      void saveEditor();
-                    }
-                  }}
-                />
-                {editor.annotationId ? (
-                  <button type="button" disabled={busy} onClick={() => void deleteEditor()} className="h-8 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:bg-state-hover hover:text-destructive">
-                    {pendingAction === "Deleting…" ? <LoadingLabel>Deleting…</LoadingLabel> : "Delete"}
-                  </button>
-                ) : null}
-                <button type="button" disabled={busy} onClick={cancelEditor} className="h-8 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground">
-                  Cancel
-                </button>
-                <button type="button" disabled={busy || !canSave} onClick={() => void saveEditor()} className="h-8 shrink-0 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
-                  {pendingAction === "Saving…" ? <LoadingLabel>Saving…</LoadingLabel> : "Save"}
-                </button>
-              </div>
-              {expanded ? (
-                <fieldset disabled={busy} className="min-h-0 min-w-0 border-0 border-t border-border p-0">
-                  <DesignEditor design={design} onChange={setDesign} />
-                </fieldset>
-              ) : null}
-            </div>
-          ) : null}
-        </div>,
-        toolbarContainer,
-      ) : null}
-    </>
+      <button
+        type="button"
+        aria-hidden={!showSend}
+        tabIndex={showSend ? 0 : -1}
+        disabled={!showSend || busy}
+        title={missingCaptures > 0 && !capturing ? "Some screenshots failed; they are retried on send" : undefined}
+        onClick={() => void send()}
+        className={`inline-flex h-7 shrink-0 items-center overflow-hidden whitespace-nowrap rounded-md bg-blue-500 text-xs font-semibold text-white ${MOTION} hover:bg-blue-400 active:scale-[.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-default ${showSend ? "max-w-32 px-2.5 opacity-100" : "pointer-events-none max-w-0 scale-90 px-0 opacity-0"}`}
+      >
+        {sending ? <LoadingLabel>Sending…</LoadingLabel> : capturing ? <LoadingLabel>Capturing…</LoadingLabel> : `Send ${count}`}
+      </button>
+    </span>
   );
 }
 

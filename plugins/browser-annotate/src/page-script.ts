@@ -1,21 +1,28 @@
-import type { Batch, DesignChange, EditorDraft, ReactComponent } from "./contracts.js";
+import type { Batch, ReactComponent } from "./contracts.js";
 
 /**
  * Page-side annotator. Runs in BB's isolated world through
  * `experimental_page.evaluate`, so page scripts share the DOM but never see
  * this controller or `bb.postMessage`. It owns only untrusted selection
- * evidence, markers, and design previews; the comment editor stays in the BB
- * renderer. Everything here is lost when the document navigates.
+ * evidence, markers, design previews, and the editor popover, all inside a
+ * closed shadow root. Only trusted (real user) input selects, saves, or
+ * deletes. Everything here is lost when the document navigates.
  */
 
 export const CONTROLLER = "__bbAnnotate";
 
-export type PageTheme = { surface: string; text: string; muted: string; accent: string };
+export type PageTheme = {
+  surface: string;
+  text: string;
+  muted: string;
+  accent: string;
+  border: string;
+  field: string;
+};
 
 export type PageMessage =
-  | { type: "editor"; editor: EditorDraft }
-  | { type: "editor-closed"; editorId: string }
   | { type: "changed"; revision: number }
+  | { type: "committed"; annotationId: string }
   | { type: "cancel" };
 
 export type PageState = {
@@ -60,19 +67,76 @@ const PAGE_SCRIPT = `
   const surface = theme.surface || "rgba(20,22,28,.96)";
   const text = theme.text || "#e8eaf0";
   const muted = theme.muted || "#9aa0ad";
+  const border = theme.border || "rgba(255,255,255,.12)";
+  const field = theme.field || "rgba(255,255,255,.06)";
   const tint = (percent) => "color-mix(in srgb," + accent + " " + percent + "%,transparent)";
+  const ease = "cubic-bezier(.2,.8,.2,1)";
+  const font = "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif";
   const css =
     ":host{all:initial}" +
-    "#__bbAnnTip{position:fixed;z-index:2147483645;pointer-events:none;display:none;background:" + surface + ";color:" + text + ";" +
-    "font:12px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;padding:6px 10px;border-radius:8px;max-width:70vw;box-shadow:0 4px 16px rgba(0,0,0,.4)}" +
+    "#__bbAnnTip{position:fixed;z-index:2147483645;pointer-events:none;opacity:0;transform:translateY(3px);" +
+    "transition:opacity .14s " + ease + ",transform .14s " + ease + ";background:" + surface + ";color:" + text + ";" +
+    "font:12px/1.6 " + font + ";padding:6px 10px;border-radius:8px;max-width:70vw;box-shadow:0 4px 16px rgba(0,0,0,.35)}" +
+    "#__bbAnnTip.on{opacity:1;transform:none}" +
     "#__bbAnnTip b{color:" + text + "}" +
     "#__bbAnnTip .dim{color:" + muted + "}" +
-    "#__bbAnnBox{position:fixed;z-index:2147483644;pointer-events:none;display:none;border:2px solid " + accent + ";background:" + tint(12) + ";border-radius:4px}" +
-    "#__bbAnnEditing{position:fixed;z-index:2147483644;pointer-events:none;display:none;border:2px dashed " + accent + ";background:" + tint(14) + ";border-radius:4px}" +
-    ":host([data-capturing]) #__bbAnnTip,:host([data-capturing]) #__bbAnnBox,:host([data-capturing]) #__bbAnnEditing{visibility:hidden}" +
-    ".__bbAnnOutline{position:fixed;z-index:2147483643;pointer-events:none;border:2px solid " + accent + ";background:" + tint(8) + ";border-radius:4px}" +
+    "#__bbAnnBox{position:fixed;z-index:2147483644;pointer-events:none;opacity:0;border:2px solid " + accent + ";background:" + tint(12) + ";border-radius:5px;" +
+    "transition:left .12s " + ease + ",top .12s " + ease + ",width .12s " + ease + ",height .12s " + ease + ",opacity .14s " + ease + "}" +
+    "#__bbAnnBox.on{opacity:1}" +
+    "#__bbAnnEditing{position:fixed;z-index:2147483644;pointer-events:none;display:none;border:2px dashed " + accent + ";background:" + tint(14) + ";border-radius:5px;" +
+    "animation:bbAnnFade .18s " + ease + "}" +
+    ":host([data-capturing]) #__bbAnnTip,:host([data-capturing]) #__bbAnnBox,:host([data-capturing]) #__bbAnnEditing,:host([data-capturing]) #__bbAnnPop{visibility:hidden}" +
+    ".__bbAnnOutline{position:fixed;z-index:2147483643;pointer-events:none;border:2px solid " + accent + ";background:" + tint(8) + ";border-radius:5px;" +
+    "animation:bbAnnFade .24s " + ease + "}" +
     ".__bbAnnPin{position:fixed;z-index:2147483645;pointer-events:auto;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;" +
-    "background:" + accent + ";color:#fff;font:700 12px/22px -apple-system,Segoe UI,Roboto,sans-serif;text-align:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4)}";
+    "background:" + accent + ";color:#fff;font:700 12px/22px " + font + ";text-align:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.35);" +
+    "transition:transform .16s " + ease + ";animation:bbAnnPop .32s " + ease + "}" +
+    ".__bbAnnPin:hover{transform:scale(1.12)}" +
+    "@keyframes bbAnnFade{from{opacity:0}to{opacity:1}}" +
+    "@keyframes bbAnnPop{0%{opacity:0;transform:scale(.4)}60%{opacity:1;transform:scale(1.12)}100%{transform:scale(1)}}" +
+    "#__bbAnnPop{position:fixed;z-index:2147483646;pointer-events:auto;display:none;box-sizing:border-box;width:340px;max-width:calc(100vw - 16px);" +
+    "background:" + surface + ";color:" + text + ";border:1px solid " + border + ";border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.35),0 2px 8px rgba(0,0,0,.2);" +
+    "font:13px/1.45 " + font + ";opacity:0;transform:translateY(6px) scale(.97);transform-origin:top left;" +
+    "transition:opacity .18s " + ease + ",transform .22s " + ease + ",top .2s " + ease + ",left .2s " + ease + "}" +
+    "#__bbAnnPop.above{transform-origin:bottom left}" +
+    "#__bbAnnPop.on{opacity:1;transform:none}" +
+    "#__bbAnnPop *{box-sizing:border-box;font:inherit;color:inherit}" +
+    "#__bbAnnPop .head{display:flex;align-items:center;gap:6px;padding:8px 8px 0}" +
+    "#__bbAnnPop .chip{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:" + muted + "}" +
+    "#__bbAnnPop .chip b{color:" + text + ";font-weight:600;margin-right:4px}" +
+    "#__bbAnnPop button{cursor:pointer;border:0;background:transparent;border-radius:8px;transition:background .14s " + ease + ",color .14s " + ease + ",opacity .14s " + ease + ",transform .14s " + ease + "}" +
+    "#__bbAnnPop button:active{transform:scale(.96)}" +
+    "#__bbAnnPop button:disabled{opacity:.4;cursor:default;transform:none}" +
+    "#__bbAnnPop button:focus-visible,#__bbAnnPop textarea:focus-visible,#__bbAnnPop input:focus-visible,#__bbAnnPop select:focus-visible{outline:2px solid " + tint(60) + ";outline-offset:1px}" +
+    "#__bbAnnPop .icon{display:grid;place-items:center;width:28px;height:28px;color:" + muted + "}" +
+    "#__bbAnnPop .icon:hover{background:" + field + ";color:" + text + "}" +
+    "#__bbAnnPop .icon.on{color:" + accent + "}" +
+    "#__bbAnnPop textarea.comment{display:block;width:100%;resize:none;border:0;outline:0;background:transparent;padding:6px 12px 4px;min-height:44px;max-height:160px;field-sizing:content}" +
+    "#__bbAnnPop textarea.comment::placeholder{color:" + muted + "}" +
+    "#__bbAnnPop .drawer{display:grid;grid-template-rows:0fr;transition:grid-template-rows .26s " + ease + "}" +
+    "#__bbAnnPop .drawer.open{grid-template-rows:1fr}" +
+    "#__bbAnnPop .drawer>div{min-height:0;overflow:hidden}" +
+    "#__bbAnnPop .settings{max-height:min(280px,45vh);overflow-y:auto;padding:0 12px;border-top:1px solid " + border + ";opacity:0;transition:opacity .2s " + ease + "}" +
+    "#__bbAnnPop .drawer.open .settings{opacity:1}" +
+    "#__bbAnnPop h4{margin:10px 0 4px;font-size:11px;font-weight:600;color:" + muted + "}" +
+    "#__bbAnnPop label.f{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);align-items:center;gap:8px;min-height:30px;font-size:12px}" +
+    "#__bbAnnPop label.f>span{color:" + muted + ";overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+    "#__bbAnnPop .in{width:100%;height:26px;min-width:0;border:1px solid " + border + ";border-radius:7px;background:" + field + ";padding:0 7px;outline:0;font-size:12px;transition:border-color .14s " + ease + "}" +
+    "#__bbAnnPop .in:focus{border-color:" + accent + "}" +
+    "#__bbAnnPop textarea.in{height:auto;min-height:26px;padding:4px 7px;resize:none;field-sizing:content;max-height:80px}" +
+    "#__bbAnnPop .color{display:grid;grid-template-columns:26px minmax(0,1fr);gap:6px}" +
+    "#__bbAnnPop input[type=color]{width:26px;height:26px;padding:2px;border:1px solid " + border + ";border-radius:7px;background:" + field + ";cursor:pointer}" +
+    "#__bbAnnPop .reset{font-size:11px;color:" + muted + ";padding:2px 6px;float:right;margin-top:8px}" +
+    "#__bbAnnPop .reset:hover{color:" + text + ";background:" + field + "}" +
+    "#__bbAnnPop .actions{display:flex;align-items:center;gap:6px;padding:6px 8px 8px}" +
+    "#__bbAnnPop .actions .grow{flex:1}" +
+    "#__bbAnnPop .ghost{height:28px;padding:0 10px;font-size:12px;color:" + muted + "}" +
+    "#__bbAnnPop .ghost:hover{background:" + field + ";color:" + text + "}" +
+    "#__bbAnnPop .danger:hover{color:#ef4444}" +
+    "#__bbAnnPop .primary{height:28px;padding:0 12px;font-size:12px;font-weight:600;background:" + accent + ";color:#fff}" +
+    "#__bbAnnPop .primary:hover:not(:disabled){filter:brightness(1.08)}" +
+    "#__bbAnnPop .hint{font-size:11px;color:" + muted + "}" +
+    "@media (prefers-reduced-motion:reduce){#__bbAnnBox,#__bbAnnTip,#__bbAnnPop,#__bbAnnPop *,.__bbAnnPin,.__bbAnnOutline,#__bbAnnEditing{transition:none!important;animation:none!important}}";
 
   const style = document.createElement("style");
   style.id = "__bbAnnStyle";
@@ -290,7 +354,7 @@ const PAGE_SCRIPT = `
   const paintHover = (element) => {
     const rect = element.getBoundingClientRect();
     if (rect.width < 1 && rect.height < 1) { hideHover(); return; }
-    box.style.display = "block";
+    box.classList.add("on");
     box.style.left = rect.left - 2 + "px";
     box.style.top = rect.top - 2 + "px";
     box.style.width = rect.width + 4 + "px";
@@ -303,12 +367,12 @@ const PAGE_SCRIPT = `
       Math.round(rect.width) + "x" + Math.round(rect.height) + "</span><br>" +
       "<span class='dim'>color</span> " + color + "<br>" +
       "<span class='dim'>font</span> " + font;
-    tip.style.display = "block";
+    tip.classList.add("on");
     const vw = document.documentElement.clientWidth || innerWidth;
     tip.style.left = Math.max(8, Math.min(rect.left, vw - 240)) + "px";
     tip.style.top = Math.max(8, rect.top > 90 ? rect.top - 82 : rect.bottom + 8) + "px";
   };
-  const hideHover = () => { box.style.display = "none"; tip.style.display = "none"; };
+  const hideHover = () => { box.classList.remove("on"); tip.classList.remove("on"); };
 
   const pins = new Map();
   const paintPin = (item) => {
@@ -417,6 +481,7 @@ const PAGE_SCRIPT = `
     state.editor = null;
     editing.style.display = "none";
     state.editorPreviewRevision = 0;
+    hidePopover();
     renderDesignPreview();
   };
   const paintEditing = () => {
@@ -427,7 +492,308 @@ const PAGE_SCRIPT = `
     editing.style.top = rect.top - 3 + "px";
     editing.style.width = rect.width + 6 + "px";
     editing.style.height = rect.height + 6 + "px";
+    placePopover();
   };
+
+  // ---- In-page editor popover (closed shadow root, isolated world) ----
+  const DESIGN_GROUPS = [
+    ["Content", ["text", "color", "background-color", "opacity"]],
+    ["Typography", ["font-family", "font-size", "font-weight"]],
+    ["Border", ["border-radius", "border-color", "border-width"]],
+    ["Dimensions", ["width", "height"]],
+    ["Padding", ["padding-top", "padding-right", "padding-bottom", "padding-left"]],
+    ["Margin", ["margin-top", "margin-right", "margin-bottom", "margin-left"]],
+    ["Flex layout", ["flex-direction", "justify-content", "align-items", "gap", "row-gap", "column-gap"]],
+  ];
+  const DESIGN_LABELS = {
+    text: "Text", color: "Text color", "background-color": "Background", opacity: "Opacity",
+    "font-family": "Font", "font-size": "Font size", "font-weight": "Font weight",
+    "border-radius": "Radius", "border-color": "Border color", "border-width": "Border width",
+    width: "Width", height: "Height",
+    "padding-top": "Top", "padding-right": "Right", "padding-bottom": "Bottom", "padding-left": "Left",
+    "margin-top": "Top", "margin-right": "Right", "margin-bottom": "Bottom", "margin-left": "Left",
+    "flex-direction": "Direction", "justify-content": "Distribution", "align-items": "Alignment",
+    gap: "Gap", "row-gap": "Row gap", "column-gap": "Column gap",
+  };
+  const SELECT_VALUES = {
+    "font-weight": ["100", "200", "300", "400", "500", "600", "700", "800", "900"],
+    "flex-direction": ["row", "row-reverse", "column", "column-reverse"],
+    "justify-content": ["flex-start", "center", "flex-end", "space-between", "space-around", "space-evenly"],
+    "align-items": ["flex-start", "center", "flex-end", "stretch", "baseline"],
+  };
+  const PIXEL_PROPERTIES = new Set([
+    "font-size", "border-radius", "border-width", "width", "height",
+    "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "margin-top", "margin-right", "margin-bottom", "margin-left", "gap", "row-gap", "column-gap",
+  ]);
+  const COLOR_PROPERTIES = new Set(["color", "background-color", "border-color"]);
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const numericValue = (value) => {
+    const number = Number.parseFloat(value);
+    return Number.isFinite(number) ? String(Math.round(number * 100) / 100) : "0";
+  };
+  const toHex = (value) => {
+    const match = String(value).match(/^rgba?\\(\\s*(\\d+)\\D+(\\d+)\\D+(\\d+)/i);
+    if (!match) return /^#[0-9a-f]{6}$/i.test(value) ? value : "#000000";
+    return "#" + [match[1], match[2], match[3]]
+      .map((part) => Math.max(0, Math.min(255, Number(part))).toString(16).padStart(2, "0"))
+      .join("");
+  };
+  const node = (tag, attrs, children) => {
+    const element = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key === "text") element.textContent = value;
+      else if (key === "class") element.className = value;
+      else element.setAttribute(key, value);
+    }
+    for (const child of children || []) if (child) element.appendChild(child);
+    return element;
+  };
+  const slidersIcon = () => {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "16");
+    svg.setAttribute("height", "16");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.8");
+    svg.setAttribute("stroke-linecap", "round");
+    for (const d of ["M4 7h9M17 7h3M4 17h3M11 17h9"]) {
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    }
+    for (const [cx, cy] of [[15, 7], [9, 17]]) {
+      const circle = document.createElementNS(SVG_NS, "circle");
+      circle.setAttribute("cx", String(cx));
+      circle.setAttribute("cy", String(cy));
+      circle.setAttribute("r", "2");
+      svg.appendChild(circle);
+    }
+    return svg;
+  };
+
+  const pop = el("__bbAnnPop");
+  pop.setAttribute("role", "dialog");
+  let popHideTimer = 0;
+  let previewQueued = 0;
+  let popExpanded = false;
+  let popRefs = null;
+
+  const changedDesign = (design) => {
+    if (!design) return null;
+    const declarations = design.declarations
+      .filter((change) => change.value !== change.previousValue)
+      .map((change) => ({ ...change }));
+    const textChange = design.text && design.text.value !== design.text.previousValue ? { ...design.text } : null;
+    return declarations.length > 0 || textChange ? { text: textChange, declarations } : null;
+  };
+
+  const queuePreview = () => {
+    if (previewQueued) return;
+    previewQueued = requestAnimationFrame(() => {
+      previewQueued = 0;
+      if (!formDraft) return;
+      renderDesignPreview();
+      refreshOverlay();
+    });
+  };
+
+  const syncPopControls = () => {
+    if (!popRefs || !formDraft) return;
+    const designChanged = Boolean(changedDesign(formDraft.designChange));
+    popRefs.save.disabled = !(popRefs.comment.value.trim().length > 0 || designChanged);
+    popRefs.toggle.classList.toggle("on", popExpanded || designChanged);
+    popRefs.reset.style.display = designChanged ? "" : "none";
+  };
+
+  const setDesignValue = (property, value) => {
+    if (!formDraft) return;
+    const design = formDraft.designChange;
+    if (property === "text") {
+      if (design.text) design.text = { ...design.text, value: String(value).slice(0, 4000) };
+    } else {
+      design.declarations = design.declarations.map((change) =>
+        change.property === property ? { ...change, value: String(value).slice(0, 1000) } : change,
+      );
+    }
+    if (state.editor) state.editor.designChange = design;
+    queuePreview();
+    syncPopControls();
+  };
+
+  const buildField = (property, design) => {
+    const declaration = design.declarations.find((change) => change.property === property);
+    const value = property === "text" ? (design.text ? design.text.value : "") : (declaration ? declaration.value : "");
+    const label = node("label", { class: "f" }, [node("span", { text: DESIGN_LABELS[property] || property })]);
+    let control;
+    if (property === "text") {
+      control = node("textarea", { class: "in", rows: "1", maxlength: "4000" });
+      control.value = value;
+      control.addEventListener("input", () => setDesignValue("text", control.value));
+    } else if (COLOR_PROPERTIES.has(property)) {
+      const picker = node("input", { type: "color", "aria-label": (DESIGN_LABELS[property] || property) + " picker" });
+      const input = node("input", { class: "in" });
+      picker.value = toHex(value);
+      input.value = value;
+      picker.addEventListener("input", () => { input.value = picker.value; setDesignValue(property, picker.value); });
+      input.addEventListener("input", () => { picker.value = toHex(input.value); setDesignValue(property, input.value); });
+      control = node("span", { class: "color" }, [picker, input]);
+    } else if (SELECT_VALUES[property]) {
+      control = node("select", { class: "in" });
+      const options = SELECT_VALUES[property].includes(value) ? SELECT_VALUES[property] : [value, ...SELECT_VALUES[property]];
+      for (const option of options) control.appendChild(node("option", { value: option, text: option }));
+      control.value = value;
+      control.addEventListener("change", () => setDesignValue(property, control.value));
+    } else {
+      const numeric = property === "opacity" || PIXEL_PROPERTIES.has(property);
+      control = node("input", { class: "in", type: numeric ? "number" : "text" });
+      if (property === "opacity") { control.min = "0"; control.max = "1"; control.step = "0.05"; }
+      else if (numeric) control.step = "1";
+      control.value = numeric ? numericValue(value) : value;
+      control.addEventListener("input", () => {
+        const next = control.value;
+        setDesignValue(property, PIXEL_PROPERTIES.has(property) ? (next || "0") + "px" : next);
+      });
+    }
+    label.appendChild(control);
+    return label;
+  };
+
+  const buildSettings = (container) => {
+    container.textContent = "";
+    if (!formDraft) return;
+    const design = formDraft.designChange;
+    const reset = node("button", { type: "button", class: "reset", text: "Reset all" });
+    reset.addEventListener("click", (event) => {
+      if (!trusted(event) || !formDraft) return;
+      formDraft.designChange = {
+        text: formDraft.designChange.text ? { ...formDraft.designChange.text, value: formDraft.designChange.text.previousValue } : null,
+        declarations: formDraft.designChange.declarations.map((change) => ({ ...change, value: change.previousValue })),
+      };
+      if (state.editor) state.editor.designChange = formDraft.designChange;
+      buildSettings(container);
+      queuePreview();
+      syncPopControls();
+    });
+    container.appendChild(reset);
+    if (popRefs) popRefs.reset = reset;
+    const available = new Set(design.declarations.map((change) => change.property));
+    for (const [title, properties] of DESIGN_GROUPS) {
+      const shown = properties.filter((property) => (property === "text" ? Boolean(design.text) : available.has(property)));
+      if (shown.length === 0) continue;
+      container.appendChild(node("h4", { text: title }));
+      for (const property of shown) container.appendChild(buildField(property, design));
+    }
+    container.appendChild(node("div", { style: "height:10px" }));
+  };
+
+  const placePopover = () => {
+    if (!formTarget || pop.style.display === "none") return;
+    const fallback = state.editor.rect;
+    const rect = formTarget.isConnected
+      ? formTarget.getBoundingClientRect()
+      : { left: fallback.x, top: fallback.y, bottom: fallback.y + fallback.height };
+    const viewportWidth = document.documentElement.clientWidth || innerWidth;
+    const width = pop.offsetWidth || 340;
+    const height = pop.offsetHeight || 140;
+    const gap = 10;
+    const left = Math.max(8, Math.min(rect.left, viewportWidth - width - 8));
+    let top;
+    let above = false;
+    if (rect.bottom + gap + height <= innerHeight - 8) top = rect.bottom + gap;
+    else if (rect.top - gap - height >= 8) { top = rect.top - gap - height; above = true; }
+    else top = Math.max(8, innerHeight - height - 8);
+    pop.classList.toggle("above", above);
+    pop.style.left = left + "px";
+    pop.style.top = top + "px";
+  };
+
+  const showPopover = () => {
+    clearTimeout(popHideTimer);
+    if (!state.editor || !formDraft) return;
+    popExpanded = false;
+    pop.textContent = "";
+    const toggle = node("button", { type: "button", class: "icon", "aria-label": "Element settings", "aria-expanded": "false" }, [slidersIcon()]);
+    const chip = node("span", { class: "chip", title: state.editor.target }, [
+      node("b", { text: "<" + state.editor.tag + ">" }),
+      document.createTextNode(state.editor.target),
+    ]);
+    const comment = node("textarea", { class: "comment", rows: "2", maxlength: "4000", placeholder: "Add a comment…", "aria-label": "Annotation comment" });
+    comment.value = state.editor.comment || "";
+    const settings = node("div", { class: "settings" });
+    const drawer = node("div", { class: "drawer" }, [node("div", {}, [settings])]);
+    const save = node("button", { type: "button", class: "primary", text: formAnnotation ? "Update" : "Save" });
+    const cancel = node("button", { type: "button", class: "ghost", text: "Cancel" });
+    const remove = formAnnotation ? node("button", { type: "button", class: "ghost danger", text: "Delete" }) : null;
+    const hint = node("span", { class: "hint", text: "↵ to save" });
+    pop.appendChild(node("div", { class: "head" }, [chip, toggle]));
+    pop.appendChild(comment);
+    pop.appendChild(drawer);
+    pop.appendChild(node("div", { class: "actions" }, [remove, hint, node("span", { class: "grow" }), cancel, save]));
+    popRefs = { comment, save, toggle, reset: null };
+    buildSettings(settings);
+
+    toggle.addEventListener("click", (event) => {
+      if (!trusted(event)) return;
+      popExpanded = !popExpanded;
+      drawer.classList.toggle("open", popExpanded);
+      toggle.setAttribute("aria-expanded", String(popExpanded));
+      comment.placeholder = popExpanded ? "Describe these changes…" : "Add a comment…";
+      syncPopControls();
+      comment.focus({ preventScroll: true });
+      // Follow the drawer while it animates so the popover stays on screen.
+      const started = performance.now();
+      const follow = () => {
+        placePopover();
+        if (performance.now() - started < 320) requestAnimationFrame(follow);
+      };
+      requestAnimationFrame(follow);
+    });
+    comment.addEventListener("input", syncPopControls);
+    comment.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && trusted(event)) {
+        event.preventDefault();
+        if (!save.disabled) saveFromPopover();
+      }
+    });
+    save.addEventListener("click", (event) => { if (trusted(event)) saveFromPopover(); });
+    cancel.addEventListener("click", (event) => { if (trusted(event)) hideForm(); });
+    if (remove) {
+      remove.addEventListener("click", (event) => {
+        if (!trusted(event) || !formAnnotation) return;
+        const item = formAnnotation;
+        hideForm();
+        removeItem(item);
+      });
+    }
+
+    pop.style.display = "block";
+    pop.classList.remove("on");
+    syncPopControls();
+    placePopover();
+    requestAnimationFrame(() => {
+      pop.classList.add("on");
+      comment.focus({ preventScroll: true });
+      const end = comment.value.length;
+      comment.setSelectionRange(end, end);
+    });
+  };
+
+  const hidePopover = () => {
+    popRefs = null;
+    pop.classList.remove("on");
+    clearTimeout(popHideTimer);
+    popHideTimer = setTimeout(() => {
+      if (!state.editor) { pop.style.display = "none"; pop.textContent = ""; }
+    }, 200);
+  };
+
+  const saveFromPopover = () => {
+    if (!state.editor || !popRefs || !formDraft) return;
+    commitTrustedEditor(state.editor.id, popRefs.comment.value, changedDesign(formDraft.designChange));
+  };
+
 
   const makeEvidenceItem = (element) => {
     const rect = element.getBoundingClientRect();
@@ -514,14 +880,12 @@ const PAGE_SCRIPT = `
     renderDesignPreview();
     hideHover();
     paintEditing();
-    post({ type: "editor", editor: state.editor });
+    showPopover();
     return true;
   };
 
   const closeFormFromPage = () => {
-    const editorId = state.editor && state.editor.id;
     hideForm();
-    if (editorId) post({ type: "editor-closed", editorId });
   };
 
   const refreshOverlay = () => {
@@ -600,6 +964,7 @@ const PAGE_SCRIPT = `
     queueCapture(item);
     hideForm();
     bumpRevision();
+    post({ type: "committed", annotationId: item.id });
     return { annotationId: item.id };
   };
 
@@ -652,6 +1017,8 @@ const PAGE_SCRIPT = `
     disposed = true;
     mutationObserver.disconnect();
     window.cancelAnimationFrame(previewFrame);
+    window.cancelAnimationFrame(previewQueued);
+    clearTimeout(popHideTimer);
     document.removeEventListener("mousemove", onMove, true);
     document.removeEventListener("pointerdown", onPointerDown, true);
     document.removeEventListener("click", blockClick, true);
@@ -675,26 +1042,6 @@ const PAGE_SCRIPT = `
   const controller = {
     state: pageState,
     snapshot: () => (disposed ? null : serializedBatch()),
-    preview: (editorId, previewRevision, designChange) => {
-      if (
-        !state.editor ||
-        state.editor.id !== editorId ||
-        !formDraft ||
-        previewRevision <= state.editorPreviewRevision
-      ) return false;
-      state.editorPreviewRevision = previewRevision;
-      formDraft.designChange = designChange;
-      state.editor.designChange = designChange;
-      renderDesignPreview();
-      requestAnimationFrame(refreshOverlay);
-      return true;
-    },
-    commit: commitTrustedEditor,
-    cancelEditor: (editorId) => {
-      if (!state.editor || state.editor.id !== editorId) return false;
-      hideForm();
-      return true;
-    },
     open: (annotationId) => {
       const item = state.items.find((candidate) => candidate.id === annotationId);
       if (!item) return false;
@@ -732,6 +1079,7 @@ const PAGE_SCRIPT = `
     },
     cleanup,
   };
+  if (options.allowSyntheticInput === true) globalThis.__bbAnnotateTestRoot = uiRoot;
 
   document.addEventListener("mousemove", onMove, true);
   document.addEventListener("pointerdown", onPointerDown, true);
@@ -800,11 +1148,6 @@ export const pageCalls = {
   state: () => call("c.state()"),
   snapshot: () => call("c.snapshot()"),
   cleanup: () => call("(c.cleanup(), true)"),
-  preview: (editorId: string, previewRevision: number, design: DesignChange) =>
-    call(`c.preview(${JSON.stringify(editorId)}, ${previewRevision}, ${JSON.stringify(design)})`),
-  commit: (editorId: string, comment: string, design: DesignChange | null) =>
-    call(`c.commit(${JSON.stringify(editorId)}, ${JSON.stringify(comment)}, ${JSON.stringify(design)})`),
-  cancelEditor: (editorId: string) => call(`c.cancelEditor(${JSON.stringify(editorId)})`),
   open: (annotationId: string) => call(`c.open(${JSON.stringify(annotationId)})`),
   remove: (annotationId: string) => call(`c.remove(${JSON.stringify(annotationId)})`),
   setCapturing: (capturing: boolean) => call(`c.setCapturing(${capturing})`),

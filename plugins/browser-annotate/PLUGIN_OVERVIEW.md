@@ -4,7 +4,7 @@ Add comments to elements in a native BB Browser tab and send one batch to the cu
 
 ## How it works
 
-Choose **Annotate** in the Browser toolbar, select an element, and enter a comment in the editor strip above the page. Save more selections to build a batch; the page shows numbered markers and selection highlights while the editor stays in BB's renderer. Send the batch directly from **Annotate Page**, or keep it as a Browser comments mention in the composer and send it with your next message. The sent mention remains available in thread history: hover it to review the comments and screenshots.
+Choose **Annotate** in the Browser toolbar, select an element, and enter a comment in the popover that opens next to it. Save more selections to build a batch; the page shows numbered markers and selection highlights. Send the batch with **Send** next to **Annotate**, or keep it as a Browser comments mention in the composer and send it with your next message. The sent mention remains available in thread history: hover it to review the comments and screenshots.
 
 ## Requirements
 
