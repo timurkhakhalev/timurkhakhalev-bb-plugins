@@ -1,47 +1,62 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { placeEditor } from "./editor-placement.js";
-import * as Dialog from "@radix-ui/react-dialog";
 import {
   definePluginApp,
+  experimental_usePluginId,
   useComposer,
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
-  type ComposerStructuredDraft,
-  type ComposerView,
+  type ExperimentalPluginBrowserPage,
   type ExperimentalPluginBrowserToolbarActionProps,
+  type JsonValue,
 } from "@get-bb/plugin-sdk/app";
-import type { DesignChange, EditorDraft, rpcContract } from "./contracts.js";
-import { planMentionReconciliation, removeStructuredMentionText } from "./composer.js";
+import {
+  batchSchema,
+  editorDraftSchema,
+  reactComponentSchema,
+  type DesignChange,
+  type EditorDraft,
+  type LiveAnnotation,
+  type rpcContract,
+} from "./contracts.js";
+import { planMentionReconciliation, removeMentionsFromDraft } from "./composer.js";
+import {
+  activateExpression,
+  pageCalls,
+  reactProbeExpression,
+  type PageState,
+  type PageTheme,
+} from "./page-script.js";
+import { z } from "zod";
 
 type SessionEvent = {
   threadId?: string;
-  tabId?: string;
-  status?: "cancelled" | "error" | "sent";
+  status?: "sent";
   count?: number;
   batchId?: string;
-  error?: string;
 };
 
-type LiveAnnotation = {
-  id: string;
-  tag: string;
-  target: string;
-  comment: string;
-  designChange: DesignChange | null;
-  previewDataUrl: string | null;
+const MENTION_PROVIDER = "browser-comments";
+
+/**
+ * Live page sessions by thread, so the composer hover card can edit or delete
+ * annotations that are still on the page.
+ */
+type LiveSession = {
+  batchId: string;
+  open(annotationId: string): Promise<boolean>;
+  remove(annotationId: string): Promise<boolean>;
 };
+const liveSessions = new Map<string, LiveSession>();
+const liveSessionListeners = new Set<() => void>();
+function setLiveSession(threadId: string, session: LiveSession | null) {
+  if (session) liveSessions.set(threadId, session);
+  else liveSessions.delete(threadId);
+  for (const listener of liveSessionListeners) listener();
+}
 
-const composerDrafts = new Map<string, ComposerStructuredDraft>();
-const composerDraftListeners = new Set<(threadId: string) => void>();
-
-type DesktopBrowserVisibility = {
-  setVisible(input: { tabId: string; visible: boolean }): void;
-  setVisibleWithoutFocus(input: { tabId: string; visible: boolean }): void;
-};
-const composerDraftReady = new Set<string>();
-
+/** Dashed element box with a pointer: "pick something on the page". */
 const annotateIcon = (
   <svg
     aria-hidden
@@ -51,12 +66,54 @@ const annotateIcon = (
     strokeWidth="1.8"
     strokeLinecap="round"
     strokeLinejoin="round"
-    className="size-3.5"
+    className="size-4"
   >
-    <path d="M12 20h9" />
-    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    <path d="M14 3.5H6A2.5 2.5 0 0 0 3.5 6v8a2.5 2.5 0 0 0 2.5 2.5h3" strokeDasharray="2.6 2.6" />
+    <path d="M17.5 9.5V6A2.5 2.5 0 0 0 15 3.5" strokeDasharray="2.6 2.6" />
+    <path d="m12.2 12.2 8.6 3.1-3.7 1.6-1.6 3.7z" fill="currentColor" />
   </svg>
 );
+
+const pageStateSchema = z
+  .object({
+    active: z.boolean(),
+    count: z.number().int().min(0),
+    revision: z.number().int().min(0),
+    url: z.string(),
+    startUrl: z.string(),
+  })
+  .passthrough();
+const commitResultSchema = z.object({ annotationId: z.string().min(1) }).nullable();
+const probeResultSchema = z
+  .object({ components: z.array(reactComponentSchema).max(12) })
+  .nullable();
+const pageMessageSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("editor"), editor: editorDraftSchema }),
+  z.object({ type: z.literal("editor-closed"), editorId: z.string() }),
+  z.object({ type: z.literal("changed"), revision: z.number() }),
+  z.object({ type: z.literal("cancel") }),
+]);
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function errorText(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : typeof error === "string" ? error : fallback;
+}
+
+function readTheme(): PageTheme | null {
+  if (typeof document === "undefined" || typeof CSS === "undefined") return null;
+  const computed = getComputedStyle(document.documentElement);
+  const color = (name: string, fallback: string) => {
+    const value = computed.getPropertyValue(name).trim();
+    return value && CSS.supports("color", value) ? value : fallback;
+  };
+  return {
+    surface: color("--popover", "rgba(20,22,28,.96)"),
+    text: color("--popover-foreground", "#e8eaf0"),
+    muted: color("--muted-foreground", "#9aa0ad"),
+    accent: "#3b82f6",
+  };
+}
 
 const designGroups = [
   { title: "Content", properties: ["text", "color", "background-color", "opacity"] },
@@ -276,295 +333,336 @@ function LoadingLabel({ children }: { children: React.ReactNode }) {
   </span>;
 }
 
-function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToolbarActionProps) {
+function BrowserAnnotateAction({
+  threadId,
+  tabId,
+  url,
+  experimental_page: page,
+}: ExperimentalPluginBrowserToolbarActionProps) {
   const tooltipId = useId();
-  const commentRef = useRef<HTMLTextAreaElement | null>(null);
-  const [previewReadyId, setPreviewReadyId] = useState<string | null>(null);
   const rpc = useRpc<typeof rpcContract>();
-  const connectionState = useRealtimeConnectionState();
+  const commentRef = useRef<HTMLTextAreaElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const revisionRef = useRef(-1);
-  const editorIdRef = useRef<string | null>(null);
+  const pageRef = useRef<ExperimentalPluginBrowserPage | null>(page);
+  pageRef.current = page;
+  const activeRef = useRef(false);
+  const batchIdRef = useRef<string | null>(null);
+  const startUrlRef = useRef<string | null>(null);
+  const activatingRef = useRef<Promise<void> | null>(null);
+  const syncTailRef = useRef<Promise<void>>(Promise.resolve());
+  const syncQueuedRef = useRef(false);
   const previewRevisionRef = useRef(0);
-  const pollErrorRef = useRef(false);
-  const previewErrorRef = useRef(false);
-  const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const busy = pendingAction !== null;
-  const [syncing, setSyncing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const showSessionError = (error: unknown, fallback: string) => setErrorMessage(error instanceof Error ? error.message : typeof error === "string" ? error : fallback);
   const [active, setActive] = useState(false);
+  const [count, setCount] = useState(0);
   const [editor, setEditor] = useState<EditorDraft | null>(null);
-  const knownPreviewKeyRef = useRef<string | null>(null);
-  const [expanded, setExpanded] = useState(false);
-  const editorRef = useRef<HTMLDivElement | null>(null);
-  const editorViewportRef = useRef<DOMRect | null>(null);
-  const [editorStyle, setEditorStyle] = useState<React.CSSProperties>({ visibility: "hidden" });
   const [comment, setComment] = useState("");
   const [design, setDesign] = useState<DesignChange | null>(null);
-  const [annotationCount, setAnnotationCount] = useState(0);
-  const [capturePending, setCapturePending] = useState(false);
-  const [captureFailed, setCaptureFailed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [capturing, setCapturing] = useState(false);
+  const [missingCaptures, setMissingCaptures] = useState(0);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [toolbarContainer, setToolbarContainer] = useState<HTMLDivElement | null>(null);
-  const [pageStyle, setPageStyle] = useState<React.CSSProperties>({});
-  const [selectionStyle, setSelectionStyle] = useState<React.CSSProperties>({});
+  const busy = pendingAction !== null;
 
-  const refreshStatus = useCallback(() => {
-    void rpc
-      .call("status", { threadId })
-      .then((status) => setActive(status.active && status.tabId === tabId))
-      .catch(() => undefined);
-  }, [rpc, tabId, threadId]);
+  const evaluate = useCallback(async (expression: string, world?: "main") => {
+    const current = pageRef.current;
+    if (!current) throw new Error("Annotate works in Browser tabs of the desktop app");
+    return current.evaluate(expression, world ? { world } : undefined);
+  }, []);
 
-  useLayoutEffect(() => {
-    if (!editor) return;
-    // Electron's native browser view sits above DOM portals. The editor uses a
-    // page snapshot while the native view is hidden, then restores it on close.
-    const browser = (window as typeof window & {
-      bbDesktop?: { browser?: DesktopBrowserVisibility };
-    }).bbDesktop?.browser;
-    if (!browser) return;
-    const navigation = findBrowserNavigation(buttonRef.current);
-    const viewport = navigation?.parentElement?.lastElementChild;
-    if (viewport) {
-      const rect = viewport.getBoundingClientRect();
-      editorViewportRef.current = rect;
-      setPageStyle({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+  const closeEditor = useCallback(() => {
+    setEditor(null);
+    setExpanded(false);
+    setComment("");
+    setDesign(null);
+  }, []);
+
+  /** Push the page's annotations to the server and screenshot new versions. */
+  const runSync = useCallback(async () => {
+    const batchId = batchIdRef.current;
+    if (!batchId) return;
+    const raw = await evaluate(pageCalls.snapshot());
+    if (raw === null) return;
+    const batch = batchSchema.parse(raw);
+    setCount(batch.annotations.length);
+    const { missingCaptures: missing } = await rpc.call("sync", { threadId, batchId, batch });
+    setMissingCaptures(missing.length);
+    if (missing.length === 0) return;
+    setCapturing(true);
+    try {
+      // Let the page repaint markers after the editor strip collapses.
+      await sleep(160);
+      await evaluate(pageCalls.setCapturing(true));
+      const { captured } = await rpc.call("capture", { threadId, tabId, batchId, annotations: missing });
+      setMissingCaptures(missing.length - captured.length);
+    } finally {
+      await evaluate(pageCalls.setCapturing(false)).catch(() => undefined);
+      setCapturing(false);
     }
-    if (previewReadyId !== editor.id) return;
-    browser.setVisible({ tabId, visible: false });
-    return () => {
-      if (buttonRef.current?.getBoundingClientRect().width) {
-        browser.setVisibleWithoutFocus({ tabId, visible: true });
-      }
-    };
-  }, [editor?.id, previewReadyId, tabId]);
+  }, [evaluate, rpc, tabId, threadId]);
 
-  useEffect(refreshStatus, [connectionState, refreshStatus]);
+  const scheduleSync = useCallback(() => {
+    if (syncQueuedRef.current) return syncTailRef.current;
+    syncQueuedRef.current = true;
+    const next = syncTailRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        syncQueuedRef.current = false;
+        await runSync();
+      })
+      .catch((error: unknown) => {
+        setErrorMessage(errorText(error, "Could not save annotations"));
+      });
+    syncTailRef.current = next;
+    return next;
+  }, [runSync]);
 
-  useLayoutEffect(() => {
-    if (!editor) return;
-    const position = () => {
-      const navigation = findBrowserNavigation(buttonRef.current);
-      const viewport = navigation?.parentElement?.lastElementChild;
-      const popup = editorRef.current;
-      if (!viewport || !popup) return;
-      const liveBounds = viewport.getBoundingClientRect();
-      const bounds = liveBounds.height > 0 ? liveBounds : editorViewportRef.current;
-      if (!bounds) return;
-      const placement = placeEditor(bounds, editor.viewport, editor.rect, expanded, window.innerHeight);
-      setEditorStyle(placement.popup);
-      setSelectionStyle(placement.target);
-      setPageStyle({ left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height });
-    };
-    const frame = requestAnimationFrame(() => {
-      position();
-    });
-    window.addEventListener("resize", position);
-    return () => { cancelAnimationFrame(frame); window.removeEventListener("resize", position); };
-  }, [editor?.id, expanded, previewReadyId]);
+  const deactivatePage = useCallback(async () => {
+    activeRef.current = false;
+    setActive(false);
+    closeEditor();
+    await evaluate(pageCalls.cleanup()).catch(() => undefined);
+  }, [closeEditor, evaluate]);
 
+  const activate = useCallback(async (pageUrl: string) => {
+    if (activatingRef.current) return activatingRef.current;
+    const run = (async () => {
+      const { batchId, batch } = await rpc.call("start", { threadId, url: pageUrl });
+      if (!pageRef.current) return;
+      const state = pageStateSchema.extend({ restored: z.boolean() }).parse(
+        await evaluate(activateExpression({ restore: batch, theme: readTheme() })),
+      );
+      // A restore that missed (redirect, different document) must not overwrite
+      // the stored draft with an empty page.
+      batchIdRef.current = batch && !state.restored
+        ? `batch_${Date.now().toString(36)}_${crypto.randomUUID()}`
+        : batchId;
+      startUrlRef.current = state.startUrl;
+      activeRef.current = true;
+      setActive(true);
+      setCount(state.count);
+      setErrorMessage(null);
+      if (state.restored) void scheduleSync();
+    })();
+    activatingRef.current = run;
+    try {
+      await run;
+    } finally {
+      activatingRef.current = null;
+    }
+  }, [evaluate, rpc, scheduleSync, threadId]);
 
-  useLayoutEffect(() => {
-    if (!active) return;
-    const navigation = findBrowserNavigation(buttonRef.current);
-    const viewport = navigation?.parentElement?.lastElementChild;
-    if (!viewport) return;
-    // Reserve layout space: a DOM overlay cannot paint over Electron's native view.
-    const container = document.createElement("div");
-    container.style.cssText = "flex:none;position:relative;min-width:0";
-    viewport.before(container);
-    setToolbarContainer(container);
-    return () => { container.remove(); setToolbarContainer(null); };
-  }, [active]);
-
+  // Page messages: selection opened the editor, page closed it, batch changed, Escape.
   useEffect(() => {
-    if (!active) {
-      setSyncing(false);
-      revisionRef.current = -1;
-      editorIdRef.current = null;
-      knownPreviewKeyRef.current = null;
-      setEditor(null);
-      return;
-    }
-    let disposed = false;
-    let running = false;
-    const poll = async () => {
-      if (disposed || running) return;
-      running = true;
-      const progressTimer = window.setTimeout(() => { if (!disposed) setSyncing(true); }, 750);
+    if (!page) return;
+    return page.onMessage((data: JsonValue) => {
+      const parsed = pageMessageSchema.safeParse(data);
+      if (!parsed.success || !activeRef.current) return;
+      const message = parsed.data;
+      if (message.type === "editor") {
+        previewRevisionRef.current = 0;
+        setEditor(message.editor);
+        setComment(message.editor.comment);
+        setDesign(message.editor.designChange);
+        setExpanded(false);
+        setErrorMessage(null);
+      } else if (message.type === "editor-closed") {
+        setEditor((current) => (current?.id === message.editorId ? null : current));
+      } else if (message.type === "changed") {
+        void scheduleSync();
+      } else if (message.type === "cancel") {
+        activeRef.current = false;
+        setActive(false);
+        closeEditor();
+      }
+    });
+  }, [closeEditor, page, scheduleSync]);
+
+  // Reload or navigation drops the page script; restore the draft for the new document.
+  useEffect(() => {
+    if (!active || !page) return;
+    let stopped = false;
+    const check = async () => {
+      if (stopped || activatingRef.current) return;
       try {
-        const live = await rpc.call("live", { threadId, afterRevision: revisionRef.current, knownPreviewKey: knownPreviewKeyRef.current });
-        if (disposed) return;
-        revisionRef.current = Math.max(revisionRef.current, live.revision);
-        knownPreviewKeyRef.current = live.editor?.previewKey ?? null;
-        setAnnotationCount(live.annotations.length);
-        setCapturePending(live.capturePending);
-        setCaptureFailed(live.captureFailed);
-        if (live.editor?.id !== editorIdRef.current) {
-          editorIdRef.current = live.editor?.id ?? null;
-          setEditor(live.editor);
-          setExpanded(false);
-          setComment(live.editor?.comment ?? "");
-          setDesign(live.editor?.designChange ?? null);
-          previewRevisionRef.current = 0;
-          previewErrorRef.current = false;
-        } else if (live.editor?.previewDataUrl) {
-          const previewDataUrl = live.editor.previewDataUrl;
-          setEditor((current) => current && current.previewDataUrl !== previewDataUrl
-            ? { ...current, previewDataUrl, previewKey: live.editor!.previewKey }
-            : current);
-        }
-        if (!live.active) setActive(false);
-        pollErrorRef.current = false;
+        const raw = await evaluate(pageCalls.state());
+        if (stopped || !activeRef.current) return;
+        const state = raw === null ? null : pageStateSchema.parse(raw as PageState);
+        if (state && state.url === state.startUrl) return;
+        closeEditor();
+        if (state) await evaluate(pageCalls.cleanup()).catch(() => undefined);
+        await syncTailRef.current.catch(() => undefined);
+        await activate(state?.url ?? url);
       } catch (error) {
-        if (!disposed && !pollErrorRef.current) {
-          pollErrorRef.current = true;
-          setActive(false);
-          showSessionError(error, "Could not read annotation state");
-        }
-      } finally {
-        window.clearTimeout(progressTimer);
-        if (!disposed) setSyncing(false);
-        running = false;
+        if (!stopped) setErrorMessage(errorText(error, "Could not reach the page"));
       }
     };
-    void poll();
-    const timer = window.setInterval(() => void poll(), 150);
+    void check();
+    const timer = window.setInterval(() => void check(), 1000);
     return () => {
-      disposed = true;
+      stopped = true;
       window.clearInterval(timer);
     };
-  }, [active, rpc, threadId]);
+  }, [activate, active, closeEditor, evaluate, page, url]);
+
+  // Leaving the tab or thread turns the picker off; the draft stays stored.
+  useEffect(() => () => {
+    if (activeRef.current) {
+      activeRef.current = false;
+      void pageRef.current?.evaluate(pageCalls.cleanup()).catch(() => undefined);
+    }
+  }, []);
 
   useEffect(() => {
-    if (!active || !editor || !design) return;
-    const previewRevision = ++previewRevisionRef.current;
-    const timer = window.setTimeout(() => {
-      void rpc.call("preview", {
-        threadId,
-        editorId: editor.id,
-        previewRevision,
-        designChange: design,
-      }).then(() => {
-        previewErrorRef.current = false;
-      }).catch((error) => {
-        if (!previewErrorRef.current) {
-          previewErrorRef.current = true;
-          setErrorMessage(error instanceof Error ? error.message : "Could not preview design changes");
-        }
-      });
-    }, 80);
-    return () => window.clearTimeout(timer);
-  }, [active, design, editor?.id, rpc, threadId]);
+    if (!active || !batchIdRef.current) return;
+    const batchId = batchIdRef.current;
+    setLiveSession(threadId, {
+      batchId,
+      open: async (annotationId) => (await evaluate(pageCalls.open(annotationId))) === true,
+      remove: async (annotationId) => (await evaluate(pageCalls.remove(annotationId))) === true,
+    });
+    return () => {
+      if (liveSessions.get(threadId)?.batchId === batchId) setLiveSession(threadId, null);
+    };
+  }, [active, count, evaluate, threadId]);
 
   useRealtime(
     "annotate-session",
     useCallback(
       (rawPayload) => {
         const payload = rawPayload as SessionEvent;
-        if (payload.threadId !== threadId || payload.tabId !== tabId) return;
-        setActive(false);
-        if (payload.status === "error") {
-          showSessionError(payload.error, "Browser annotation failed");
-        }
+        if (payload.threadId !== threadId || payload.status !== "sent") return;
+        if (payload.batchId !== batchIdRef.current || !activeRef.current) return;
+        void deactivatePage();
       },
-      [tabId, threadId],
+      [deactivatePage, threadId],
     ),
   );
 
-  const toggle = useCallback(async () => {
-    if (busy) return;
-    setPendingAction(active ? "Stopping…" : "Starting…");
-    try {
-      if (active) {
-        await rpc.call("stop", { threadId });
-        setActive(false);
-      } else {
-        setErrorMessage(null);
-        await rpc.call("start", { threadId, tabId });
-        setActive(true);
-      }
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setPendingAction(null);
-    }
-  }, [active, busy, rpc, tabId, threadId]);
+  // Live design preview on the page.
+  useEffect(() => {
+    if (!editor || !design) return;
+    const revision = ++previewRevisionRef.current;
+    const timer = window.setTimeout(() => {
+      void evaluate(pageCalls.preview(editor.id, revision, design)).catch((error: unknown) => {
+        setErrorMessage(errorText(error, "Could not preview design changes"));
+      });
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [design, editor, evaluate]);
 
-  const saveEditor = useCallback(async () => {
-    if (!editor || !design || busy) return;
+  // Reserve layout space above the page: DOM cannot paint over the native view.
+  useLayoutEffect(() => {
+    if (!active) return;
+    const navigation = findBrowserNavigation(buttonRef.current);
+    const viewport = navigation?.parentElement?.lastElementChild;
+    if (!viewport) return;
+    const container = document.createElement("div");
+    container.style.cssText = "flex:none;position:relative;min-width:0";
+    viewport.before(container);
+    setToolbarContainer(container);
+    return () => {
+      container.remove();
+      setToolbarContainer(null);
+    };
+  }, [active]);
+
+  // Selecting an element focuses the page; pull keyboard focus into the editor.
+  useEffect(() => {
+    if (!editor) return;
+    const frame = requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const input = commentRef.current;
+        if (!input?.isConnected) return;
+        window.focus();
+        input.focus({ preventScroll: true });
+      }),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [editor?.id]);
+
+  const run = useCallback(async (label: string, action: () => Promise<void>, fallback: string) => {
+    if (pendingAction) return;
+    setPendingAction(label);
     setErrorMessage(null);
-    setPendingAction("Saving…");
     try {
-      const result = await rpc.call("save", {
-        threadId,
-        editorId: editor.id,
-        comment,
-        designChange: changedDesign(design),
-      });
-      if (!result.saved) throw new Error("The selected element is no longer available");
-      editorIdRef.current = null;
-      knownPreviewKeyRef.current = null;
-      setEditor(null);
+      await action();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not save annotation");
+      setErrorMessage(errorText(error, fallback));
     } finally {
       setPendingAction(null);
     }
-  }, [busy, comment, design, editor, rpc, threadId]);
+  }, [pendingAction]);
 
-  const cancelEditor = useCallback(async () => {
-    if (!editor || busy) return;
-    setPendingAction("Closing…");
-    try {
-      await rpc.call("cancelEditor", { threadId, editorId: editor.id });
-      editorIdRef.current = null;
-      knownPreviewKeyRef.current = null;
-      setEditor(null);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not close annotation editor");
-    } finally {
-      setPendingAction(null);
+  const toggle = () => run(active ? "Stopping…" : "Starting…", async () => {
+    if (active) {
+      await syncTailRef.current;
+      await deactivatePage();
+    } else {
+      await activate(url);
     }
-  }, [busy, editor, rpc, threadId]);
+  }, "Could not start annotating");
 
-  const deleteEditor = useCallback(async () => {
-    if (!editor?.annotationId || busy) return;
-    setPendingAction("Deleting…");
-    try {
-      const result = await rpc.call("mutate", {
-        threadId,
-        annotationId: editor.annotationId,
-        action: "delete",
-      });
-      if (!result.changed) throw new Error("The annotation is no longer available");
-      editorIdRef.current = null;
-      knownPreviewKeyRef.current = null;
-      setEditor(null);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not delete annotation");
-    } finally {
-      setPendingAction(null);
-    }
-  }, [busy, editor, rpc, threadId]);
+  const saveEditor = () => {
+    if (!editor || !design) return;
+    const editorId = editor.id;
+    return run("Saving…", async () => {
+      const result = commitResultSchema.parse(
+        await evaluate(pageCalls.commit(editorId, comment, changedDesign(design))),
+      );
+      if (!result) throw new Error("The selected element is no longer available");
+      closeEditor();
+      await probeComponents(result.annotationId);
+      await scheduleSync();
+    }, "Could not save annotation");
+  };
 
-  const send = useCallback(async () => {
-    if (busy) return;
-    setPendingAction("Sending…");
+  const probeComponents = async (annotationId: string) => {
     try {
-      const result = await rpc.call("send", { threadId });
-      if (!result.sent) throw new Error("Finish the current annotation before sending");
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not send annotations");
-    } finally {
-      setPendingAction(null);
+      const token = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      if ((await evaluate(pageCalls.tagForProbe(annotationId, token))) !== true) return;
+      const probe = probeResultSchema.safeParse(await evaluate(reactProbeExpression(token), "main"));
+      if (probe.success && probe.data && probe.data.components.length > 0) {
+        await evaluate(pageCalls.setComponents(annotationId, probe.data.components));
+      }
+    } catch {
+      // React names are a hint; the annotation is useful without them.
     }
-  }, [busy, rpc, threadId]);
+  };
+
+  const cancelEditor = () => {
+    if (!editor) return;
+    const editorId = editor.id;
+    closeEditor();
+    void evaluate(pageCalls.cancelEditor(editorId)).catch(() => undefined);
+  };
+
+  const deleteEditor = () => {
+    if (!editor?.annotationId) return;
+    const annotationId = editor.annotationId;
+    return run("Deleting…", async () => {
+      if ((await evaluate(pageCalls.remove(annotationId))) !== true) {
+        throw new Error("The annotation is no longer available");
+      }
+      closeEditor();
+    }, "Could not delete annotation");
+  };
+
+  const send = () => run("Sending…", async () => {
+    await scheduleSync();
+    const batchId = batchIdRef.current;
+    if (!batchId) return;
+    const result = await rpc.call("send", { threadId, batchId });
+    if (!result.sent) throw new Error("Add at least one annotation before sending");
+    await deactivatePage();
+  }, "Could not send annotations");
 
   const designChanged = design ? changedDesign(design) : null;
   const canSave = Boolean(editor && (comment.trim().length > 0 || designChanged));
-  const actionLabel = pendingAction ?? (active ? "Stop annotation mode" : "Start annotation mode");
+  const actionLabel = pendingAction ?? (page === null
+    ? "Annotate works in Browser tabs of the desktop app"
+    : active ? "Stop annotating (Esc)" : "Annotate page elements");
 
   return (
     <>
@@ -572,79 +670,71 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
         <button
           ref={buttonRef}
           type="button"
-          className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 ${active ? "bg-card text-blue-500" : "text-muted-foreground hover:text-foreground"}`}
+          className={`relative inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 ${active ? "bg-card text-blue-500" : errorMessage && !active ? "text-destructive" : "text-muted-foreground hover:text-foreground"}`}
           aria-label={actionLabel}
           aria-describedby={tooltipId}
           aria-pressed={active}
           aria-busy={busy}
-          disabled={busy}
+          disabled={busy || page === null}
           onClick={() => void toggle()}
         >
-          {busy ? <LoadingLabel><span className="hidden xl:inline">{pendingAction}</span></LoadingLabel> : <>
+          {busy && !active ? <LoadingLabel><span className="hidden xl:inline">{pendingAction}</span></LoadingLabel> : <>
             {annotateIcon}
             <span className="hidden xl:inline">{active ? "Annotating" : "Annotate"}</span>
           </>}
+          {count > 0 && active ? (
+            <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-500 px-1 text-[10px] font-semibold leading-none text-white">
+              {count}
+            </span>
+          ) : null}
         </button>
         <span
           id={tooltipId}
           role="tooltip"
           className="pointer-events-none invisible absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow-md transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
         >
-          {actionLabel}
+          {errorMessage && !active ? errorMessage : actionLabel}
         </span>
       </span>
-      {errorMessage && !editor ? <span role="status" className="max-w-48 text-xs text-destructive">{errorMessage}</span> : null}
-      {editor?.previewDataUrl ? createPortal(
-        <>
-          <img key={editor.id} src={editor.previewDataUrl} alt="" onLoad={() => setPreviewReadyId(editor.id)} style={{ position: "fixed", zIndex: 1199, pointerEvents: "none", ...pageStyle }} />
-          <div aria-hidden style={{ position: "fixed", zIndex: 1200, pointerEvents: "none", outline: "2px solid #3385ff", ...selectionStyle }} />
-        </>,
-        document.body,
-      ) : null}
       {active && toolbarContainer ? createPortal(
-        <div data-bb-plugin-root="" data-bb-plugin="browser-annotate" className="flex justify-center border-b border-border bg-background px-3 py-1">
-          <div className="flex h-9 items-center gap-3 text-foreground">
+        <div data-bb-plugin-root="" data-bb-plugin="browser-annotate" className="border-b border-border bg-background">
+          <div className="flex h-10 items-center gap-3 px-3 text-foreground">
             <span className="text-sm font-semibold tracking-[-0.01em]">Annotate Page</span>
-            {syncing && !busy ? <span className="text-xs text-muted-foreground"><LoadingLabel>Syncing…</LoadingLabel></span> : null}
+            <span className="text-xs text-muted-foreground">
+              {editor ? `Commenting on <${editor.tag}>` : count > 0 ? `${count} saved · click another element` : "Click an element to comment"}
+            </span>
+            {errorMessage ? <span role="status" className="min-w-0 truncate text-xs text-destructive">{errorMessage}</span> : null}
+            <span className="ml-auto" />
             <button
               type="button"
               className="h-8 min-w-[4.5rem] rounded-lg bg-blue-500 px-3.5 text-sm font-semibold text-white transition-colors hover:bg-blue-400 active:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/35"
-              disabled={busy || Boolean(editor) || annotationCount === 0 || capturePending}
-              title={captureFailed ? "Screenshot failed; retrying automatically" : undefined}
+              disabled={busy || Boolean(editor) || count === 0}
+              title={missingCaptures > 0 && !capturing ? "Some screenshots failed; they are retried on send" : undefined}
               onClick={() => void send()}
             >
-              {pendingAction === "Sending…" ? <LoadingLabel>Sending…</LoadingLabel> : capturePending ? <LoadingLabel>Capturing…</LoadingLabel> : "Send"}
+              {pendingAction === "Sending…" ? <LoadingLabel>Sending…</LoadingLabel> : capturing ? <LoadingLabel>Capturing…</LoadingLabel> : "Send"}
             </button>
           </div>
-          {editor && design && previewReadyId === editor.id ? (
-            <Dialog.Root open onOpenChange={(open) => { if (!open) void cancelEditor(); }}>
-            <Dialog.Portal>
-            <Dialog.Content
-              ref={editorRef}
-              data-bb-plugin-root=""
-              data-bb-plugin="browser-annotate"
+          {editor && design ? (
+            <div
+              role="dialog"
               aria-label={`Annotate ${editor.target}`}
-              aria-describedby={undefined}
               aria-busy={busy}
-              onOpenAutoFocus={(event) => {
-                event.preventDefault();
-                const input = commentRef.current;
-                // Portal mount is the focus boundary, not the parent render.
-                // Let placement commit before moving keyboard focus out of WebContents.
-                requestAnimationFrame(() => requestAnimationFrame(() => {
-                  if (!input?.isConnected) return;
-                  window.focus();
-                  input.focus({ preventScroll: true });
-                }));
+              className="border-t border-border bg-popover text-popover-foreground"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelEditor();
+                }
               }}
-              style={editorStyle}
-              className={`fixed z-[1201] flex flex-col overflow-hidden border border-border bg-popover text-popover-foreground shadow-2xl ${expanded ? "rounded-xl" : "rounded-full"}`}
             >
-              <Dialog.Title className="sr-only">Annotate {editor.target}</Dialog.Title>
-              <div className={`flex shrink-0 items-center gap-2 px-2 py-1.5 ${expanded ? "border-b border-border" : ""}`}>
-                <button type="button" aria-label={expanded ? "Hide element settings" : "Show element settings"} aria-expanded={expanded} disabled={busy} onClick={() => setExpanded((value) => !value)} className="flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-state-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
+              <div className="flex items-center gap-2 px-2 py-1.5">
+                <button type="button" aria-label={expanded ? "Hide element settings" : "Show element settings"} aria-expanded={expanded} disabled={busy} onClick={() => setExpanded((value) => !value)} className={`flex size-8 shrink-0 items-center justify-center rounded-full hover:bg-state-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${expanded || designChanged ? "text-blue-500" : "text-muted-foreground"}`}>
                   <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="size-4"><path d="M3 6h8m4 0h6M3 12h3m4 0h11M3 18h11m4 0h3"/><circle cx="13" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg>
                 </button>
+                <span className="max-w-40 shrink-0 truncate rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" title={editor.target}>
+                  {editor.target}
+                </span>
                 <textarea
                   ref={commentRef}
                   value={comment}
@@ -653,58 +743,34 @@ function BrowserAnnotateAction({ threadId, tabId }: ExperimentalPluginBrowserToo
                   rows={1}
                   placeholder={expanded ? "Describe these changes…" : "Add a comment…"}
                   aria-label="Annotation comment"
-                  style={{ height: 32, minHeight: 32, maxHeight: 32, margin: 0, padding: "6px 0", lineHeight: "20px", border: 0, boxSizing: "border-box" }}
-                  className="min-w-0 flex-1 resize-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                  style={{ minHeight: 32, maxHeight: 96, margin: 0, padding: "6px 0", lineHeight: "20px", border: 0, boxSizing: "border-box" }}
+                  className="min-w-0 flex-1 resize-none bg-transparent text-sm text-foreground outline-none [field-sizing:content] placeholder:text-muted-foreground"
                   onChange={(event) => setComment(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Escape") void cancelEditor();
                     if (!event.shiftKey && !event.nativeEvent.isComposing && event.key === "Enter" && canSave) {
                       event.preventDefault();
                       void saveEditor();
                     }
                   }}
                 />
-                {!expanded && pendingAction === "Closing…" ? <span className="shrink-0 text-xs text-muted-foreground"><LoadingLabel>Closing…</LoadingLabel></span> : null}
-                {!expanded && canSave ? <button type="button" disabled={busy} onClick={() => void saveEditor()} className="h-8 shrink-0 rounded-full px-2 text-xs text-foreground hover:bg-state-hover">{pendingAction === "Saving…" ? <LoadingLabel>Saving…</LoadingLabel> : "Save"}</button> : null}
-              </div>
-              {expanded ? <>
-                <div className="shrink-0 border-b border-border px-3 py-2 text-xs text-muted-foreground">&lt;{editor.tag}&gt;</div>
-                <fieldset disabled={busy} className="min-h-0 min-w-0 border-0 p-0">
-                  <DesignEditor design={design} onChange={setDesign} />
-                </fieldset>
-              </> : null}
-              {errorMessage ? <p role="status" className="px-3 py-1 text-xs text-destructive">{errorMessage}</p> : null}
-              {expanded ? <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border bg-popover px-3 py-2">
                 {editor.annotationId ? (
-                  <button
-                    type="button"
-                    className="mr-auto h-8 rounded-md px-2 text-sm text-muted-foreground hover:bg-state-hover hover:text-destructive"
-                    disabled={busy}
-                    onClick={() => void deleteEditor()}
-                  >
+                  <button type="button" disabled={busy} onClick={() => void deleteEditor()} className="h-8 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:bg-state-hover hover:text-destructive">
                     {pendingAction === "Deleting…" ? <LoadingLabel>Deleting…</LoadingLabel> : "Delete"}
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  className="h-8 rounded-md px-3 text-sm text-muted-foreground hover:bg-state-hover hover:text-foreground"
-                  disabled={busy}
-                  onClick={() => void cancelEditor()}
-                >
-                  {pendingAction === "Closing…" ? <LoadingLabel>Closing…</LoadingLabel> : "Cancel"}
+                <button type="button" disabled={busy} onClick={cancelEditor} className="h-8 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground">
+                  Cancel
                 </button>
-                <button
-                  type="button"
-                  className="h-8 rounded-md bg-primary px-3 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                  disabled={busy || !canSave}
-                  onClick={() => void saveEditor()}
-                >
+                <button type="button" disabled={busy || !canSave} onClick={() => void saveEditor()} className="h-8 shrink-0 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
                   {pendingAction === "Saving…" ? <LoadingLabel>Saving…</LoadingLabel> : "Save"}
                 </button>
-              </div> : null}
-            </Dialog.Content>
-            </Dialog.Portal>
-            </Dialog.Root>
+              </div>
+              {expanded ? (
+                <fieldset disabled={busy} className="min-h-0 min-w-0 border-0 border-t border-border p-0">
+                  <DesignEditor design={design} onChange={setDesign} />
+                </fieldset>
+              ) : null}
+            </div>
           ) : null}
         </div>,
         toolbarContainer,
@@ -717,56 +783,58 @@ function pluralizeAnnotations(count: number) {
   return `${count} annotation${count === 1 ? "" : "s"}`;
 }
 
-function browserMentions(threadId: string) {
-  return (composerDrafts.get(threadId)?.mentions ?? []).filter(
-    (mention) => mention.provider === "browser-comments",
-  );
-}
-
+/** Keep one composer mention per pending batch; removing the pill discards the batch. */
 function useBrowserAnnotationsComposerSync() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
+  const pluginId = experimental_usePluginId();
   const connectionState = useRealtimeConnectionState();
   const composerRef = useRef(composer);
+  composerRef.current = composer;
   const [pendingRevision, setPendingRevision] = useState(0);
   const requestedMentionsRef = useRef(new Map<string, string>());
   const observedMentionsRef = useRef(new Set<string>());
   const pollErrorRef = useRef(false);
+  /** Mentions that left the draft because the message was submitted, not deleted. */
+  const submittedRef = useRef(new Set<string>());
   const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
-  composerRef.current = composer;
-
-  const detach = useCallback((batchId: string) => {
-    if (!threadId) return;
-    const mentions = browserMentions(threadId).filter((mention) => mention.id === batchId);
-    for (const mention of [...mentions].sort((left, right) => right.from - left.from)) {
-      composerRef.current.updateText((text) => removeStructuredMentionText(text, mention));
-    }
-    requestedMentionsRef.current.delete(batchId);
-    observedMentionsRef.current.delete(batchId);
-  }, [threadId]);
+  const isOwnMention = useCallback(
+    (mention: (typeof composer.draft.mentions)[number]) =>
+      mention.kind === "plugin" && mention.pluginId === pluginId && mention.provider === MENTION_PROVIDER,
+    [pluginId],
+  );
+  const browserMentions = composer.draft.mentions.flatMap((mention) =>
+    mention.kind === "plugin" && isOwnMention(mention)
+      ? [{ from: mention.from, to: mention.to, id: mention.id, label: mention.label }]
+      : [],
+  );
+  const mentionsKey = JSON.stringify(browserMentions.map((mention) => [mention.id, mention.label]));
 
   useEffect(() => {
     requestedMentionsRef.current = new Map();
     observedMentionsRef.current = new Set();
+    submittedRef.current = new Set();
     pollErrorRef.current = false;
   }, [threadId]);
+
+  useEffect(() => composer.onSubmitted(() => {
+    for (const id of observedMentionsRef.current) submittedRef.current.add(id);
+  }), [composer]);
 
   useEffect(() => {
     if (!threadId) return;
     let disposed = false;
-    let running = false;
-    let requested = false;
-    const poll = async () => {
-      if (disposed) return;
-      if (running) { requested = true; return; }
-      running = true;
+    void (async () => {
       try {
         const live = await rpc.call("pending", { threadId });
         if (disposed) return;
-
-        if (!composerDraftReady.has(threadId)) return;
-        const mentions = browserMentions(threadId);
+        const current = composerRef.current;
+        const mentions = current.draft.mentions.flatMap((mention) =>
+          mention.kind === "plugin" && isOwnMention(mention)
+            ? [{ from: mention.from, to: mention.to, id: mention.id, label: mention.label }]
+            : [],
+        );
         const plan = planMentionReconciliation(
           mentions,
           live.batches.map((batch) => ({ id: batch.id, label: pluralizeAnnotations(batch.count) })),
@@ -775,38 +843,48 @@ function useBrowserAnnotationsComposerSync() {
         );
         observedMentionsRef.current = plan.observed;
         requestedMentionsRef.current = plan.requested;
-        for (const mention of [...plan.remove].sort((left, right) => right.from - left.from)) {
-          composerRef.current.updateText((text) => removeStructuredMentionText(text, mention));
+        if (plan.remove.length > 0) {
+          const removeIds = new Set(plan.remove.map((mention) => `${mention.from}:${mention.to}`));
+          current.replace((draft) =>
+            removeMentionsFromDraft(draft, (mention) =>
+              mention.kind === "plugin" && isOwnMention(mention) && removeIds.has(`${mention.from}:${mention.to}`),
+            ),
+          );
         }
-        for (const batch of plan.insert) {
-          composerRef.current.insertMention({
-            provider: "browser-comments",
-            id: batch.id,
-            label: batch.label,
-          });
+        if (plan.insert.length > 0) {
+          const needsSpace = current.text.length > 0 && !/\s$/.test(current.text);
+          current.insert(
+            [
+              ...(needsSpace ? [" "] : []),
+              ...plan.insert.flatMap((batch) => [
+                { provider: MENTION_PROVIDER, id: batch.id, label: batch.label },
+                " ",
+              ]),
+            ],
+            { at: "end" },
+          );
+        }
+        const pendingIds = new Set(live.batches.map((batch) => batch.id));
+        for (const id of [...submittedRef.current]) {
+          if (!pendingIds.has(id)) submittedRef.current.delete(id);
         }
         for (const batchId of plan.discard) {
+          if (submittedRef.current.has(batchId)) continue;
           await rpc.call("discard", { threadId, batchId });
         }
         pollErrorRef.current = false;
+        setErrorMessage(null);
       } catch (error) {
         if (!pollErrorRef.current) {
           pollErrorRef.current = true;
-          setErrorMessage(error instanceof Error ? error.message : "Could not sync browser annotations");
+          setErrorMessage(errorText(error, "Could not sync browser annotations"));
         }
-      } finally {
-        running = false;
-        if (requested && !disposed) { requested = false; void poll(); }
       }
-    };
-    void poll();
-    const onDraft = (id: string) => { if (id === threadId) void poll(); };
-    composerDraftListeners.add(onDraft);
+    })();
     return () => {
       disposed = true;
-      composerDraftListeners.delete(onDraft);
     };
-  }, [connectionState, detach, rpc, threadId, pendingRevision]);
+  }, [connectionState, isOwnMention, mentionsKey, pendingRevision, rpc, threadId]);
 
   useRealtime("annotate-pending", useCallback((rawPayload) => {
     if ((rawPayload as { threadId?: string }).threadId === threadId) {
@@ -819,10 +897,17 @@ function useBrowserAnnotationsComposerSync() {
     useCallback(
       (rawPayload) => {
         const payload = rawPayload as SessionEvent;
-        if (!threadId || payload.threadId !== threadId) return;
-        if (payload.status === "sent" && payload.batchId) detach(payload.batchId);
+        if (!threadId || payload.threadId !== threadId || payload.status !== "sent" || !payload.batchId) return;
+        const batchId = payload.batchId;
+        composerRef.current.replace((draft) =>
+          removeMentionsFromDraft(draft, (mention) =>
+            mention.kind === "plugin" && isOwnMention(mention) && mention.id === batchId,
+          ),
+        );
+        requestedMentionsRef.current.delete(batchId);
+        observedMentionsRef.current.delete(batchId);
       },
-      [detach, threadId],
+      [isOwnMention, threadId],
     ),
   );
   return errorMessage;
@@ -855,34 +940,54 @@ function DesignChangeDetails({ designChange }: { designChange: DesignChange | nu
   );
 }
 
+function useLiveSession(threadId: string | null) {
+  const [session, setSession] = useState<LiveSession | null>(() =>
+    threadId ? liveSessions.get(threadId) ?? null : null,
+  );
+  useEffect(() => {
+    const update = () => setSession(threadId ? liveSessions.get(threadId) ?? null : null);
+    update();
+    liveSessionListeners.add(update);
+    return () => {
+      liveSessionListeners.delete(update);
+    };
+  }, [threadId]);
+  return session;
+}
+
 function SentAnnotationsHover() {
   const syncError = useBrowserAnnotationsComposerSync();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
   const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
+  const liveSession = useLiveSession(threadId);
   const closeTimerRef = useRef<number | null>(null);
   const requestRef = useRef(0);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [batchId, setBatchId] = useState<string | null>(null);
-  const [editable, setEditable] = useState(false);
+  const [sent, setSent] = useState(true);
   const [annotations, setAnnotations] = useState<LiveAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
   const [popupStyle, setPopupStyle] = useState<React.CSSProperties>({});
+  const editable = Boolean(batchId && !sent);
+  const onPage = Boolean(batchId && liveSession?.batchId === batchId);
 
   const cancelClose = useCallback(() => {
     if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
   }, []);
 
+  const reset = useCallback(() => {
+    setAnchor(null);
+    setBatchId(null);
+    setSent(true);
+    setAnnotations([]);
+  }, []);
+
   const closeSoon = useCallback(() => {
     cancelClose();
-    closeTimerRef.current = window.setTimeout(() => {
-      setAnchor(null);
-      setBatchId(null);
-      setEditable(false);
-      setAnnotations([]);
-    }, 140);
-  }, [cancelClose]);
+    closeTimerRef.current = window.setTimeout(reset, 140);
+  }, [cancelClose, reset]);
 
   useEffect(() => {
     const batchIdFor = (target: EventTarget | null) => {
@@ -893,7 +998,7 @@ function SentAnnotationsHover() {
         const resource = JSON.parse(
           pill.getAttribute("data-prompt-mention-resource") ?? "null",
         ) as { kind?: string; itemId?: string } | null;
-        const prefix = "browser-comments:";
+        const prefix = `${MENTION_PROVIDER}:`;
         if (resource?.kind !== "plugin" || !resource.itemId?.startsWith(prefix)) return null;
         return { pill, batchId: resource.itemId.slice(prefix.length) };
       } catch {
@@ -930,13 +1035,13 @@ function SentAnnotationsHover() {
       void rpc.call("batch", { threadId, batchId: match.batchId }).then((result) => {
         if (request === requestRef.current) {
           setLoading(false);
-          setEditable(result.editable);
+          setSent(result.sent);
           setAnnotations(result.annotations);
         }
-      }).catch((error) => {
+      }).catch((error: unknown) => {
         if (request === requestRef.current) {
           setLoading(false);
-          setErrorMessage(error instanceof Error ? error.message : "Could not load annotations");
+          setErrorMessage(errorText(error, "Could not load annotations"));
         }
       });
     };
@@ -955,45 +1060,33 @@ function SentAnnotationsHover() {
     };
   }, [cancelClose, closeSoon, rpc, threadId]);
 
-  const editAnnotation = useCallback(
-    async (annotationId: string) => {
-      if (!threadId || !editable) return;
-      try {
-        const result = await rpc.call("mutate", { threadId, annotationId, action: "open" });
-        if (!result.changed) {
-          setErrorMessage("This annotation target is no longer available on the page");
-          return;
-        }
-        setAnchor(null);
-        setBatchId(null);
-        setEditable(false);
-        setAnnotations([]);
-      } catch (error) {
-        setErrorMessage(error instanceof Error ? error.message : "Could not open annotation");
+  const editAnnotation = useCallback(async (annotationId: string) => {
+    if (!onPage || !liveSession) return;
+    try {
+      if (!(await liveSession.open(annotationId))) {
+        setErrorMessage("This annotation target is no longer available on the page");
+        return;
       }
-    },
-    [editable, rpc, threadId],
-  );
+      reset();
+    } catch (error) {
+      setErrorMessage(errorText(error, "Could not open annotation"));
+    }
+  }, [liveSession, onPage, reset]);
 
-  const deleteAnnotation = useCallback(
-    async (annotationId: string) => {
-      if (!threadId || !batchId || !editable) return;
-      try {
-        const result = await rpc.call("mutate", { threadId, annotationId, action: "delete" });
-        if (!result.changed) return;
-        const next = annotations.filter((annotation) => annotation.id !== annotationId);
-        setAnnotations(next);
-        if (next.length === 0) {
-          setAnchor(null);
-          setBatchId(null);
-          setEditable(false);
-        }
-      } catch (error) {
-        setErrorMessage(error instanceof Error ? error.message : "Could not delete annotation");
-      }
-    },
-    [annotations, batchId, editable, rpc, threadId],
-  );
+  const deleteAnnotation = useCallback(async (annotationId: string) => {
+    if (!threadId || !batchId || !editable) return;
+    try {
+      const changed = onPage && liveSession
+        ? await liveSession.remove(annotationId)
+        : (await rpc.call("remove", { threadId, batchId, annotationId })).changed;
+      if (!changed) return;
+      const next = annotations.filter((annotation) => annotation.id !== annotationId);
+      setAnnotations(next);
+      if (next.length === 0) reset();
+    } catch (error) {
+      setErrorMessage(errorText(error, "Could not delete annotation"));
+    }
+  }, [annotations, batchId, editable, liveSession, onPage, reset, rpc, threadId]);
 
   if (!anchor) return syncError ? <span role="status" className="text-xs text-destructive">{syncError}</span> : null;
   if (annotations.length === 0 && !errorMessage && !loading) return null;
@@ -1036,16 +1129,18 @@ function SentAnnotationsHover() {
             </div>
             {editable ? (
               <div className="flex shrink-0 items-center">
-                <button
-                  type="button"
-                  className="rounded-md p-1.5 text-muted-foreground hover:bg-state-hover hover:text-foreground"
-                  aria-label={`Edit annotation ${index + 1}`}
-                  onClick={() => void editAnnotation(annotation.id)}
-                >
-                  <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4">
-                    <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
-                  </svg>
-                </button>
+                {onPage ? (
+                  <button
+                    type="button"
+                    className="rounded-md p-1.5 text-muted-foreground hover:bg-state-hover hover:text-foreground"
+                    aria-label={`Edit annotation ${index + 1}`}
+                    onClick={() => void editAnnotation(annotation.id)}
+                  >
+                    <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4">
+                      <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
+                    </svg>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="rounded-md p-1.5 text-muted-foreground hover:bg-state-hover hover:text-destructive"
@@ -1067,22 +1162,6 @@ function SentAnnotationsHover() {
 }
 
 export default definePluginApp((app) => {
-  app.composer.customize({
-    id: "browser-annotations-draft",
-    scopes: ["thread"],
-    richText: {
-      onDraftChange(draft: ComposerStructuredDraft, view: ComposerView) {
-        if (view.scope.kind === "thread") {
-          const previous = composerDrafts.get(view.scope.threadId);
-          composerDrafts.set(view.scope.threadId, draft);
-          composerDraftReady.add(view.scope.threadId);
-          if (!previous || JSON.stringify(previous.mentions) !== JSON.stringify(draft.mentions)) {
-            for (const listener of composerDraftListeners) listener(view.scope.threadId);
-          }
-        }
-      },
-    },
-  });
   app.slots.experimental_browserToolbarAction({
     id: "browser-annotate",
     title: "Browser Annotate",

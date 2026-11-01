@@ -58,3 +58,29 @@ export function removeStructuredMentionText(
   else if (start > 0 && text[start - 1] === " ") start -= 1;
   return `${text.slice(0, start)}${text.slice(end)}`;
 }
+
+type DraftMention = StructuredMentionRange & Record<string, unknown>;
+
+/** Remove mention pills (and one adjacent space each) and shift later mentions. */
+export function removeMentionsFromDraft<T extends DraftMention>(
+  draft: { text: string; mentions: readonly T[] },
+  shouldRemove: (mention: T) => boolean,
+): { text: string; mentions: T[] } {
+  let text = draft.text;
+  let mentions = [...draft.mentions];
+  const targets = mentions.filter(shouldRemove).sort((left, right) => right.from - left.from);
+  for (const target of targets) {
+    let start = target.from;
+    let end = target.to;
+    if (text[end] === " ") end += 1;
+    else if (start > 0 && text[start - 1] === " ") start -= 1;
+    const length = end - start;
+    text = `${text.slice(0, start)}${text.slice(end)}`;
+    mentions = mentions
+      .filter((mention) => mention !== target)
+      .map((mention) =>
+        mention.from >= end ? { ...mention, from: mention.from - length, to: mention.to - length } : mention,
+      );
+  }
+  return { text, mentions };
+}

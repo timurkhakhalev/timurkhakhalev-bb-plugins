@@ -57,6 +57,14 @@ export const designChangeSchema = z
   .strict();
 export type DesignChange = z.infer<typeof designChangeSchema>;
 
+export const reactComponentSchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    source: z.string().max(1000).nullable(),
+  })
+  .strict();
+export type ReactComponent = z.infer<typeof reactComponentSchema>;
+
 export const annotationSchema = z
   .object({
     id: idSchema,
@@ -80,6 +88,7 @@ export const annotationSchema = z
       .record(z.string().max(256), z.string().max(1000))
       .refine((value) => Object.keys(value).length <= 30, "Too many metadata fields"),
     rect: rectSchema,
+    components: z.array(reactComponentSchema).max(12).optional(),
   })
   .strict()
   .refine(
@@ -128,13 +137,11 @@ export const editorDraftSchema = z
     target: z.string().max(1000),
     comment: z.string().max(4000),
     designChange: designChangeSchema,
-    previewDataUrl: z.string().max(12_000_000).nullable(),
-    previewKey: z.string().max(64).nullable(),
   })
   .strict();
 export type EditorDraft = z.infer<typeof editorDraftSchema>;
 
-const liveAnnotationSchema = z
+export const liveAnnotationSchema = z
   .object({
     id: idSchema,
     tag: z.string(),
@@ -144,128 +151,39 @@ const liveAnnotationSchema = z
     previewDataUrl: z.string().nullable(),
   })
   .strict();
+export type LiveAnnotation = z.infer<typeof liveAnnotationSchema>;
 
-/** server ↔ host (CDP execution on the desktop machine) */
-export const hostContract = {
-  startSession: {
-    input: z
-      .object({
-        wsEndpoint: z.string().url(),
-        batch: batchSchema.nullable(),
-      })
-      .strict(),
-    output: z
-      .object({
-        started: z.literal(true),
-        currentUrl: z.string().max(8192),
-        restored: z.boolean(),
-      })
-      .strict(),
-  },
-  readSession: {
-    input: z
-      .object({
-        wsEndpoint: z.string().url(),
-        afterRevision: z.number().int().min(-1),
-        knownPreviewKey: z.string().max(64).nullable().optional(),
-      })
-      .strict(),
-    output: z
-      .object({
-        status: z.enum(["active", "cancelled", "missing", "navigated"]),
-        revision: z.number().int().min(0),
-        currentUrl: z.string().max(8192),
-        batch: batchSchema.nullable(),
-        editor: editorDraftSchema.nullable(),
-        captureFailed: z.boolean(),
-        captures: z.array(
-          z
-            .object({
-              annotationId: idSchema,
-              version: z.number().int().positive(),
-              image: screenshotSchema,
-            })
-            .strict(),
-        ),
-      })
-      .strict(),
-  },
-  mutateSession: {
-    input: z
-      .object({
-        wsEndpoint: z.string().url(),
-        annotationId: idSchema,
-        action: z.enum(["delete", "open"]),
-      })
-      .strict(),
-    output: z.object({ changed: z.boolean() }).strict(),
-  },
-  previewEditor: {
-    input: z
-      .object({
-        wsEndpoint: z.string().url(),
-        editorId: idSchema,
-        previewRevision: z.number().int().positive(),
-        designChange: designChangeSchema,
-      })
-      .strict(),
-    output: z.object({ changed: z.boolean() }).strict(),
-  },
-  saveEditor: {
-    input: z
-      .object({
-        wsEndpoint: z.string().url(),
-        editorId: idSchema,
-        comment: z.string().trim().max(4000),
-        designChange: designChangeSchema.nullable(),
-      })
-      .strict(),
-    output: z
-      .object({
-        saved: z.boolean(),
-        revision: z.number().int().min(0),
-        batch: batchSchema.nullable(),
-        captures: z.array(
-          z
-            .object({
-              annotationId: idSchema,
-              version: z.number().int().positive(),
-              image: screenshotSchema,
-            })
-            .strict(),
-        ),
-        captureFailed: z.boolean(),
-      })
-      .strict(),
-  },
-  cancelEditor: {
-    input: z.object({ wsEndpoint: z.string().url(), editorId: idSchema }).strict(),
-    output: z.object({ changed: z.boolean() }).strict(),
-  },
-  cleanupSession: {
-    input: z.object({ wsEndpoint: z.string().url() }).strict(),
-    output: z.object({ cleaned: z.literal(true) }).strict(),
-  },
-} satisfies PluginRpcContract;
+const captureTargetSchema = z
+  .object({ id: idSchema, version: z.number().int().positive() })
+  .strict();
 
 /** app.tsx ↔ server */
 export const rpcContract = {
+  /** Find the draft to restore for this page, or allocate a new batch id. */
   start: {
+    input: z.object({ threadId: idSchema, url: z.string().max(8192) }).strict(),
+    output: z.object({ batchId: idSchema, batch: batchSchema.nullable() }).strict(),
+  },
+  /** Replace the stored draft with the page's current annotations. */
+  sync: {
+    input: z.object({ threadId: idSchema, batchId: idSchema, batch: batchSchema }).strict(),
+    output: z.object({ missingCaptures: z.array(captureTargetSchema) }).strict(),
+  },
+  /** Screenshot the tab once and attach it to each listed annotation version. */
+  capture: {
     input: z
       .object({
         threadId: idSchema,
         tabId: idSchema,
+        batchId: idSchema,
+        annotations: z.array(captureTargetSchema).min(1).max(50),
       })
       .strict(),
-    output: z.object({ ok: z.literal(true) }).strict(),
+    output: z.object({ captured: z.array(idSchema) }).strict(),
   },
-  stop: {
-    input: z.object({ threadId: idSchema }).strict(),
-    output: z.object({ cancelled: z.boolean() }).strict(),
-  },
-  status: {
-    input: z.object({ threadId: idSchema }).strict(),
-    output: z.object({ active: z.boolean(), tabId: idSchema.nullable() }).strict(),
+  send: {
+    input: z.object({ threadId: idSchema, batchId: idSchema }).strict(),
+    output: z.object({ sent: z.boolean() }).strict(),
   },
   pending: {
     input: z.object({ threadId: idSchema }).strict(),
@@ -284,92 +202,15 @@ export const rpcContract = {
       })
       .strict(),
   },
-  stage: {
-    input: z.object({ threadId: idSchema, batchId: idSchema }).strict(),
-    output: z.object({ staged: z.boolean() }).strict(),
-  },
-  live: {
-    input: z
-      .object({
-        threadId: idSchema,
-        afterRevision: z.number().int().min(-1),
-        knownPreviewKey: z.string().max(64).nullable().optional(),
-      })
-      .strict(),
-    output: z
-      .object({
-        active: z.boolean(),
-        revision: z.number().int().min(0),
-        batchId: idSchema.nullable(),
-        annotations: z.array(liveAnnotationSchema),
-        editor: editorDraftSchema.nullable(),
-        capturePending: z.boolean(),
-        captureFailed: z.boolean(),
-        batches: z.array(
-          z
-            .object({
-              id: idSchema,
-              label: z.string(),
-              count: z.number().int().min(1),
-            })
-            .strict(),
-        ),
-      })
-      .strict(),
-  },
-  preview: {
-    input: z
-      .object({
-        threadId: idSchema,
-        editorId: idSchema,
-        previewRevision: z.number().int().positive(),
-        designChange: designChangeSchema,
-      })
-      .strict(),
-    output: z.object({ changed: z.boolean() }).strict(),
-  },
-  save: {
-    input: z
-      .object({
-        threadId: idSchema,
-        editorId: idSchema,
-        comment: z.string().trim().max(4000),
-        designChange: designChangeSchema.nullable(),
-      })
-      .strict(),
-    output: z.object({ saved: z.boolean() }).strict(),
-  },
-  cancelEditor: {
-    input: z.object({ threadId: idSchema, editorId: idSchema }).strict(),
-    output: z.object({ changed: z.boolean() }).strict(),
-  },
-  send: {
-    input: z.object({ threadId: idSchema }).strict(),
-    output: z.object({ sent: z.boolean() }).strict(),
-  },
-  mutate: {
-    input: z
-      .object({
-        threadId: idSchema,
-        annotationId: idSchema,
-        action: z.enum(["delete", "open"]),
-      })
-      .strict(),
+  /** Delete one annotation from a stored, unsent draft (page not live). */
+  remove: {
+    input: z.object({ threadId: idSchema, batchId: idSchema, annotationId: idSchema }).strict(),
     output: z.object({ changed: z.boolean() }).strict(),
   },
   batch: {
     input: z.object({ threadId: idSchema, batchId: idSchema }).strict(),
     output: z
-      .object({ editable: z.boolean(), annotations: z.array(liveAnnotationSchema) })
-      .strict(),
-  },
-  draft: {
-    input: z.object({ threadId: idSchema }).strict(),
-    output: z
-      .object({
-        batchId: idSchema.nullable(),
-        annotations: z.array(liveAnnotationSchema),
-      })
+      .object({ sent: z.boolean(), annotations: z.array(liveAnnotationSchema) })
       .strict(),
   },
   discard: {
