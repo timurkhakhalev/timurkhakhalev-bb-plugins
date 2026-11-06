@@ -2,6 +2,9 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   definePluginApp,
+  experimental_CollapsibleStackCard as CollapsibleStackCard,
+  experimental_useAppPanel,
+  experimental_usePanelTabs,
   experimental_usePluginId,
   useComposer,
   useRealtime,
@@ -30,7 +33,7 @@ import { z } from "zod";
 
 type SessionEvent = {
   threadId?: string;
-  status?: "sent";
+  status?: "sent" | "discarded";
   count?: number;
   batchId?: string;
 };
@@ -311,7 +314,7 @@ function BrowserAnnotateAction({
     useCallback(
       (rawPayload) => {
         const payload = rawPayload as SessionEvent;
-        if (payload.threadId !== threadId || payload.status !== "sent") return;
+        if (payload.threadId !== threadId || !payload.status) return;
         if (payload.batchId !== batchIdRef.current || !activeRef.current) return;
         void deactivatePage();
       },
@@ -521,7 +524,7 @@ function useBrowserAnnotationsComposerSync() {
     useCallback(
       (rawPayload) => {
         const payload = rawPayload as SessionEvent;
-        if (!threadId || payload.threadId !== threadId || payload.status !== "sent" || !payload.batchId) return;
+        if (!threadId || payload.threadId !== threadId || !payload.status || !payload.batchId) return;
         const batchId = payload.batchId;
         composerRef.current.replace((draft) =>
           removeMentionsFromDraft(draft, (mention) =>
@@ -549,7 +552,7 @@ function DesignChangeDetails({ designChange }: { designChange: DesignChange | nu
   ];
   if (changes.length === 0) return null;
   return (
-    <div className="mt-2 space-y-1 rounded-lg bg-muted/60 p-2 font-mono text-[11px] leading-4">
+    <div className="mt-1 space-y-0.5 rounded bg-muted/60 px-1.5 py-1 font-mono text-[10px] leading-4">
       {changes.map((change) => (
         <div key={change.property} className="grid grid-cols-[minmax(5rem,auto)_1fr] gap-2">
           <span className="truncate text-muted-foreground">{change.property}</span>
@@ -560,6 +563,81 @@ function DesignChangeDetails({ designChange }: { designChange: DesignChange | nu
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+const editIcon = (
+  <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-3.5">
+    <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
+  </svg>
+);
+const deleteIcon = (
+  <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-3.5">
+    <path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5" />
+  </svg>
+);
+
+function AnnotationRow({
+  annotation,
+  index,
+  onEdit,
+  onDelete,
+}: {
+  annotation: LiveAnnotation;
+  index: number;
+  onEdit?: () => void;
+  onDelete?: () => void;
+}) {
+  return (
+    <div className="border-b border-border px-1.5 py-1.5 last:border-b-0">
+      <div className="flex items-start gap-2">
+        {annotation.previewDataUrl ? (
+          <img
+            src={annotation.previewDataUrl}
+            alt=""
+            className="size-7 shrink-0 rounded border border-border object-cover"
+          />
+        ) : (
+          <div className="flex size-7 shrink-0 items-center justify-center rounded border border-border bg-muted text-[10px] text-muted-foreground">
+            {index + 1}
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 text-[11px] leading-4 text-muted-foreground">
+            <span className="rounded bg-muted px-1">{annotation.tag}</span>
+            <span className="truncate">{annotation.target}</span>
+          </div>
+          {annotation.comment ? (
+            <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap text-xs leading-4">{annotation.comment}</p>
+          ) : null}
+          <DesignChangeDetails designChange={annotation.designChange} />
+        </div>
+        {onEdit || onDelete ? (
+          <div className="flex shrink-0 items-center">
+            {onEdit ? (
+              <button
+                type="button"
+                className="rounded p-1 text-muted-foreground hover:bg-state-hover hover:text-foreground"
+                aria-label={`Edit annotation ${index + 1}`}
+                onClick={onEdit}
+              >
+                {editIcon}
+              </button>
+            ) : null}
+            {onDelete ? (
+              <button
+                type="button"
+                className="rounded p-1 text-muted-foreground hover:bg-state-hover hover:text-destructive"
+                aria-label={`Delete annotation ${index + 1}`}
+                onClick={onDelete}
+              >
+                {deleteIcon}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -638,7 +716,7 @@ function SentAnnotationsHover() {
       const rect = match.pill.getBoundingClientRect();
       const viewportGutter = 12;
       const popoverWidth = Math.min(
-        384,
+        300,
         window.innerWidth - viewportGutter * 2,
         rect.right - viewportGutter,
       );
@@ -720,68 +798,217 @@ function SentAnnotationsHover() {
       data-bb-plugin-root=""
       data-bb-plugin="browser-annotate"
       data-bb-portaled-overlay=""
-      className="fixed z-[1100] max-h-[min(28rem,70vh)] max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-2xl"
+      className="fixed z-[1100] max-h-[min(20rem,60vh)] max-w-[calc(100vw-24px)] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-xl"
       style={popupStyle}
       onMouseEnter={cancelClose}
       onMouseLeave={closeSoon}
     >
-      {loading ? <p className="p-2 text-xs text-muted-foreground"><LoadingLabel>Loading annotations…</LoadingLabel></p> : null}
+      {loading ? <p className="p-1.5 text-xs text-muted-foreground"><LoadingLabel>Loading annotations…</LoadingLabel></p> : null}
       {errorMessage ? <p role="status" className="p-2 text-xs text-destructive">{errorMessage}</p> : null}
       {annotations.map((annotation, index) => (
-        <div key={annotation.id} className="border-b border-border p-2 last:border-b-0">
-          <div className="flex items-start gap-2">
-            {annotation.previewDataUrl ? (
-              <img
-                src={annotation.previewDataUrl}
-                alt=""
-                className="mt-0.5 size-10 rounded-md border border-border object-cover"
-              />
-            ) : (
-              <div className="mt-0.5 flex size-10 items-center justify-center rounded-md border border-border bg-muted text-xs text-muted-foreground">
-                {index + 1}
-              </div>
-            )}
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="rounded-md bg-muted px-1.5 py-0.5">{annotation.tag}</span>
-                <span className="truncate">{annotation.target}</span>
-              </div>
-              {annotation.comment ? (
-                <p className="mt-2 whitespace-pre-wrap text-sm">{annotation.comment}</p>
-              ) : null}
-              <DesignChangeDetails designChange={annotation.designChange} />
-            </div>
-            {editable ? (
-              <div className="flex shrink-0 items-center">
-                {onPage ? (
-                  <button
-                    type="button"
-                    className="rounded-md p-1.5 text-muted-foreground hover:bg-state-hover hover:text-foreground"
-                    aria-label={`Edit annotation ${index + 1}`}
-                    onClick={() => void editAnnotation(annotation.id)}
-                  >
-                    <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4">
-                      <path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z" />
-                    </svg>
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="rounded-md p-1.5 text-muted-foreground hover:bg-state-hover hover:text-destructive"
-                  aria-label={`Delete annotation ${index + 1}`}
-                  onClick={() => void deleteAnnotation(annotation.id)}
-                >
-                  <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4">
-                    <path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5" />
-                  </svg>
-                </button>
-              </div>
-            ) : null}
-          </div>
-        </div>
+        <AnnotationRow
+          key={annotation.id}
+          annotation={annotation}
+          index={index}
+          onEdit={editable && onPage ? () => void editAnnotation(annotation.id) : undefined}
+          onDelete={editable ? () => void deleteAnnotation(annotation.id) : undefined}
+        />
       ))}
     </div>,
     document.body,
+  );
+}
+
+type PendingSummary = {
+  id: string;
+  label: string;
+  count: number;
+  url: string;
+  title: string;
+};
+
+/** Same page, ignoring the hash: the address bar can add or drop one. */
+function samePage(left: string, right: string) {
+  try {
+    const a = new URL(left);
+    const b = new URL(right);
+    a.hash = "";
+    b.hash = "";
+    return a.href === b.href;
+  } catch {
+    return left === right;
+  }
+}
+
+/** Unsent annotations of this thread, as cards in the stack above the composer. */
+function PendingAnnotationsBanner() {
+  const { scope } = useComposer();
+  return scope.kind === "thread" ? <PendingAnnotationsCards threadId={scope.threadId} /> : null;
+}
+
+function PendingAnnotationsCards({ threadId }: { threadId: string }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const connectionState = useRealtimeConnectionState();
+  const [revision, setRevision] = useState(0);
+  const [batches, setBatches] = useState<PendingSummary[]>([]);
+
+  useEffect(() => {
+    let disposed = false;
+    rpc.call("pending", { threadId }).then(
+      (result) => {
+        if (!disposed) setBatches(result.batches);
+      },
+      () => undefined,
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [connectionState, revision, rpc, threadId]);
+
+  const bump = useCallback((rawPayload: unknown) => {
+    if ((rawPayload as { threadId?: string }).threadId === threadId) setRevision((value) => value + 1);
+  }, [threadId]);
+  useRealtime("annotate-pending", bump);
+  useRealtime("annotate-session", bump);
+
+  return <>{batches.map((batch) => (
+    <PendingAnnotationsCard key={batch.id} threadId={threadId} summary={batch} revision={revision} />
+  ))}</>;
+}
+
+function PendingAnnotationsCard({
+  threadId,
+  summary,
+  revision,
+}: {
+  threadId: string;
+  summary: PendingSummary;
+  revision: number;
+}) {
+  const rpc = useRpc<typeof rpcContract>();
+  const composer = useComposer();
+  const pluginId = experimental_usePluginId();
+  const liveSession = useLiveSession(threadId);
+  const panelTabs = experimental_usePanelTabs();
+  const panel = experimental_useAppPanel();
+  const [annotations, setAnnotations] = useState<LiveAnnotation[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const onPage = liveSession?.batchId === summary.id;
+  const browserTab = panelTabs.tabs.find(
+    (tab) => tab.detail.kind === "browser" && samePage(tab.detail.url, summary.url),
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    rpc.call("batch", { threadId, batchId: summary.id }).then(
+      (result) => {
+        if (!disposed) setAnnotations(result.annotations);
+      },
+      (error: unknown) => {
+        if (!disposed) setErrorMessage(errorText(error, "Could not load annotations"));
+      },
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [revision, rpc, summary.count, summary.id, threadId]);
+
+  const removePill = useCallback(() => {
+    composer.replace((draft) =>
+      removeMentionsFromDraft(draft, (mention) =>
+        mention.kind === "plugin" &&
+        mention.pluginId === pluginId &&
+        mention.provider === MENTION_PROVIDER &&
+        mention.id === summary.id,
+      ),
+    );
+  }, [composer, pluginId, summary.id]);
+
+  const remove = async (annotationId: string) => {
+    setErrorMessage(null);
+    try {
+      if (onPage && liveSession) await liveSession.remove(annotationId);
+      else await rpc.call("remove", { threadId, batchId: summary.id, annotationId });
+    } catch (error) {
+      setErrorMessage(errorText(error, "Could not delete annotation"));
+    }
+  };
+
+  const edit = async (annotationId: string) => {
+    if (!liveSession) return;
+    if (browserTab) panel.selectTab(browserTab.key);
+    try {
+      if (!(await liveSession.open(annotationId))) {
+        setErrorMessage("This annotation target is no longer available on the page");
+      }
+    } catch (error) {
+      setErrorMessage(errorText(error, "Could not open annotation"));
+    }
+  };
+
+  const send = async () => {
+    setSending(true);
+    setErrorMessage(null);
+    try {
+      const result = await rpc.call("send", { threadId, batchId: summary.id });
+      if (!result.sent) throw new Error("These annotations were already sent or removed");
+      removePill();
+    } catch (error) {
+      setErrorMessage(errorText(error, "Could not send annotations"));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const title = summary.title ? `${summary.label} · ${summary.title}` : summary.label;
+  return (
+    <CollapsibleStackCard
+      label="Browser annotations"
+      title={title}
+      icon="Target"
+      isActive={onPage}
+      dismiss={{
+        label: "Discard annotations",
+        failureMessage: "Could not discard annotations.",
+        onDismiss: async () => {
+          await rpc.call("discard", { threadId, batchId: summary.id });
+          removePill();
+        },
+      }}
+    >
+      <div className="max-h-[min(20rem,50vh)] overflow-y-auto">
+        {annotations.map((annotation, index) => (
+          <AnnotationRow
+            key={annotation.id}
+            annotation={annotation}
+            index={index}
+            onEdit={onPage ? () => void edit(annotation.id) : undefined}
+            onDelete={() => void remove(annotation.id)}
+          />
+        ))}
+      </div>
+      {errorMessage ? <p role="status" className="px-2 pt-1 text-xs text-destructive">{errorMessage}</p> : null}
+      <div className="flex items-center justify-end gap-1 px-2 pt-2">
+        {browserTab ? (
+          <button
+            type="button"
+            className={`inline-flex h-7 items-center rounded-md px-2.5 text-xs text-muted-foreground ${MOTION} hover:bg-state-hover hover:text-foreground active:scale-[.96]`}
+            onClick={() => panel.selectTab(browserTab.key)}
+          >
+            Show page
+          </button>
+        ) : null}
+        <button
+          type="button"
+          disabled={sending || annotations.length === 0}
+          className={`inline-flex h-7 items-center rounded-md bg-blue-500 px-2.5 text-xs font-semibold text-white ${MOTION} hover:bg-blue-400 active:scale-[.96] disabled:opacity-50`}
+          onClick={() => void send()}
+        >
+          {sending ? <LoadingLabel>Sending…</LoadingLabel> : `Send ${summary.count}`}
+        </button>
+      </div>
+    </CollapsibleStackCard>
   );
 }
 
@@ -794,5 +1021,10 @@ export default definePluginApp((app) => {
   app.slots.experimental_appOverlay({
     id: "sent-annotation-hover",
     component: SentAnnotationsHover,
+  });
+  app.composer.customize({
+    id: "pending-annotations",
+    scopes: ["thread"],
+    banners: [{ id: "pending-annotations", chrome: "bare", component: PendingAnnotationsBanner }],
   });
 });

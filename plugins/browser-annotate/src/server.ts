@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { type BbPluginApi, type PluginRpcHandlers } from "@get-bb/plugin-sdk";
+import { type BbPluginApi, type ExperimentalPluginRpcHandlersWithContext } from "@get-bb/plugin-sdk";
 import { batchSchema, rpcContract } from "./contracts.js";
 import type { Batch, Screenshot } from "./contracts.js";
 
@@ -748,6 +748,8 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         id: item.id,
         label: `${item.batch.annotations.length} annotation${item.batch.annotations.length === 1 ? "" : "s"}`,
         count: item.batch.annotations.length,
+        url: item.batch.url,
+        title: oneLine(item.batch.title),
       }));
   }
 
@@ -853,7 +855,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
     },
   });
 
-  const handlers: PluginRpcHandlers<typeof rpcContract> = {
+  const handlers: ExperimentalPluginRpcHandlersWithContext<typeof rpcContract> = {
     async start({ threadId, url }) {
       await prunePending();
       const draft = await latestPendingBatchForUrl(threadId, url);
@@ -876,9 +878,12 @@ export default function browserAnnotate(bb: BbPluginApi): void {
       });
     },
 
-    async capture({ threadId, tabId, batchId, annotations }) {
+    async capture({ threadId, tabId, batchId, annotations }, { experimental_signal: signal }) {
       const image = await captureTab(threadId, tabId);
+      // The page stopped waiting (tab closed, plugin reloaded): skip the writes.
+      if (signal.aborted) return { captured: [] };
       return withBatchLock(batchId, async () => {
+        if (signal.aborted) return { captured: [] };
         const item = pending.get(batchId) ?? await loadBatch(batchId, threadId);
         if (!item || item.sent || item.threadId !== threadId) return { captured: [] };
         const captured: string[] = [];
@@ -963,6 +968,7 @@ export default function browserAnnotate(bb: BbPluginApi): void {
         if (!item || item.sent) return { discarded: false };
         await removePersistedBatch(item);
         pending.delete(batchId);
+        bb.realtime.publish("annotate-session", { threadId: item.threadId, status: "discarded", batchId });
         return { discarded: true };
       });
     },

@@ -8,4 +8,4 @@ Choose **Annotate** in the Browser toolbar, select an element, and enter a comme
 
 ## Requirements
 
-Use BB 0.48 or newer with its native desktop Browser; it also works when the BB server runs on a remote machine. The plugin handles the top-level page document; cross-origin iframe content, arbitrary regions, and virtual targets are not selected. Screenshots cover the visible viewport and each batch supports up to 50 annotations. Install the plugin separately in BB from Git.
+Use BB 0.49 or newer with its native desktop Browser; it also works when the BB server runs on a remote machine. The plugin handles the top-level page document; cross-origin iframe content, arbitrary regions, and virtual targets are not selected. Screenshots cover the visible viewport and each batch supports up to 50 annotations. Install the plugin separately in BB from Git.

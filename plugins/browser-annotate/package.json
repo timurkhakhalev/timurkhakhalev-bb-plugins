@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-browser-annotate",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Annotate elements in a BB Browser tab and send comments with per-element screenshots to the current chat.",
   "type": "module",
   "homepage": "https://github.com/timurkhakhalev/timurkhakhalev-bb-plugins/tree/main/plugins/browser-annotate",
@@ -32,7 +32,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.79",
+    "@get-bb/plugin-sdk": "0.6.132",
     "@types/better-sqlite3": "^7.6.12",
     "@types/jsdom": "^27.0.0",
     "@types/node": "^22.0.0",
@@ -46,8 +46,8 @@
     "typescript": "^5.7.0"
   },
   "engines": {
-    "bb": ">=0.48.0",
-    "bbPluginSdk": ">=0.6.0"
+    "bb": ">=0.49.0",
+    "bbPluginSdk": ">=0.6.132"
   },
   "bb": {
     "name": "Browser Annotate",

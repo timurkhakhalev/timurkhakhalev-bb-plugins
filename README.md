@@ -6,7 +6,7 @@ Public collection of plugins for [BB](https://github.com/get-bb/bb).
 
 | Plugin | Description | Status |
 | --- | --- | --- |
-| [Browser Annotate](./plugins/browser-annotate) | Comment on elements in a native BB Browser tab and send the comments to the current chat with screenshots and React component names. Also works when the BB server runs on a remote machine. Requires BB 0.48+. | 0.2.0 |
+| [Browser Annotate](./plugins/browser-annotate) | Comment on elements in a native BB Browser tab and send the comments to the current chat with screenshots and React component names. Also works when the BB server runs on a remote machine. Requires BB 0.49+. | 0.2.1 |
 
 Personal, not in the collection: [Timur UI](./plugins/timur-ui), my own bb look (shorter composer plus Beautiful Chat's chat restyle).
 

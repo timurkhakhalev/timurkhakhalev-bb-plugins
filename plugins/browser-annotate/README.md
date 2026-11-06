@@ -11,12 +11,12 @@ https://github.com/user-attachments/assets/51067015-72bb-43c3-9459-a9c4a36ec2cd
 1. Open a page in the built-in Browser.
 2. Click **Annotate** in the Browser toolbar next to the address bar.
 3. Select a DOM element. The page outlines it and an editor popover opens next to the element. Write a comment, open element settings to preview design changes live on the page if needed, and save it.
-4. After every save, the composer receives an annotation mention. Hover over it to review, edit, or delete a comment.
+4. After every save, the composer receives an annotation mention, and a **Browser annotations** card appears in the stack above the composer. Hover over the mention, or expand the card, to review, edit, or delete a comment. The card also has **Show page** (switches to the Browser tab with that page), **Send**, and a discard button.
 5. Repeat for any other elements. You can also click a marker on the page to edit or delete its comment.
 6. Click **Send** next to **Annotate** in the toolbar, or send the mention with your next composer message.
 7. The plugin sends one `N annotations` message to the current chat with the full context and screenshots. The picker turns off, and the sent annotations remain available by hovering over the mention in the chat history.
 
-`Escape` and a second click on **Annotate** turn off the picker while preserving annotations already added to the composer. Removing the mention from the composer discards the entire unsent batch.
+`Escape` and a second click on **Annotate** turn off the picker while preserving annotations already added to the composer. Removing the mention from the composer, or discarding the card, discards the entire unsent batch and turns off the picker on that page.
 
 ## Agent context
 
@@ -56,11 +56,11 @@ Nothing runs on the desktop host except BB itself, so the same flow works when t
 
 ## Structure
 
-- `src/app.tsx` — Browser toolbar action and Send button, composer mention sync, and hover card.
+- `src/app.tsx` — Browser toolbar action and Send button, composer mention sync, hover card, and the pending-annotations card above the composer.
 - `src/page-script.ts` — isolated-world picker, markers, editor popover, design preview, and the main-world React probe.
 - `src/server.ts` — pending batches, screenshots via `captureTab`, mention provider, and thread storage.
 - `src/contracts.ts` — Zod contracts shared by the renderer and server.
-- Requires BB 0.48 or newer (`@get-bb/plugin-sdk` 0.6) for `experimental_page` and `captureTab`.
+- Requires BB 0.49 or newer (`@get-bb/plugin-sdk` 0.6.132) for `experimental_page`, `captureTab`, the collapsible stack card, and panel tabs.
 
 ## Limitations
 

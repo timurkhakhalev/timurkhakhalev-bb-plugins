@@ -182,6 +182,8 @@ export const rpcContract = {
               threadId: idSchema,
               label: z.string(),
               count: z.number().int().min(0),
+              url: z.string(),
+              title: z.string(),
             })
             .strict(),
         ),

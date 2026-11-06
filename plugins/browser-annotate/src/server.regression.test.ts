@@ -291,6 +291,20 @@ describe("server browser annotation workflow", () => {
     ).rejects.toThrow("expired or were removed");
   });
 
+  test("pending lists the page of each draft and discard tells the page to stop", async () => {
+    const harness = boot(createServerHarness());
+    const { batchId } = await start(harness);
+    await syncAndCapture(harness, batchId, makeBatch({ title: "  Test\n page " }));
+    await expect(harness.harness.callRpc("pending", { threadId: TEST_THREAD_ID })).resolves.toMatchObject({
+      batches: [{ id: batchId, count: 1, url: TEST_URL, title: "Test page" }],
+    });
+    await harness.harness.callRpc("discard", { threadId: TEST_THREAD_ID, batchId });
+    expect(harness.harness.realtimeSignals).toContainEqual({
+      channel: "annotate-session",
+      payload: { threadId: TEST_THREAD_ID, status: "discarded", batchId },
+    });
+  });
+
   test("#6 a tampered batch cannot remove another batch's screenshot", async () => {
     const harness = boot(createServerHarness());
     const first = await start(harness);
