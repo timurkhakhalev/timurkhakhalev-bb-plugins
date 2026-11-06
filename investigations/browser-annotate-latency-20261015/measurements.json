@@ -1,0 +1,452 @@
+{
+  "date": "2026-10-15",
+  "threadId": "thr_bik69dqne3",
+  "method": "Temporary instrumented installed plugin; native BB UI; A-B-A composer polling comparison. UI timings include observation overhead; small sample and variable network. Original plugin restored.",
+  "ui": {
+    "baselineOpenMs": 9690,
+    "baselineSaveMs": 12169,
+    "B_singlePollOpenMs": [
+      3516,
+      3004,
+      2822,
+      2782
+    ],
+    "B_singlePollCancelMs": [
+      1451,
+      2339,
+      2153,
+      2584
+    ],
+    "A2_originalOpenMs": [
+      11113,
+      3982,
+      3959
+    ],
+    "A2_originalCancelMs": [
+      6929,
+      5685,
+      3859
+    ]
+  },
+  "serverPhases": {
+    "A": {
+      "False": {
+        "total": {
+          "n": 48,
+          "medianMs": 290.039,
+          "maxMs": 10024.486
+        },
+        "host.readSession": {
+          "n": 48,
+          "medianMs": 218.224,
+          "maxMs": 1074.387
+        },
+        "queueWait": {
+          "n": 48,
+          "medianMs": 0.003,
+          "maxMs": 8494.109
+        },
+        "pendingSummaries": {
+          "n": 48,
+          "medianMs": 0.115,
+          "maxMs": 0.723
+        }
+      },
+      "True": {
+        "total": {
+          "n": 22,
+          "medianMs": 1003.567,
+          "maxMs": 3194.488
+        },
+        "host.readSession": {
+          "n": 22,
+          "medianMs": 914.026,
+          "maxMs": 1664.904
+        },
+        "queueWait": {
+          "n": 22,
+          "medianMs": 0.002,
+          "maxMs": 1528.427
+        },
+        "pendingSummaries": {
+          "n": 22,
+          "medianMs": 0.118,
+          "maxMs": 0.596
+        }
+      }
+    },
+    "B": {
+      "False": {
+        "total": {
+          "n": 27,
+          "medianMs": 213.002,
+          "maxMs": 577.072
+        },
+        "host.readSession": {
+          "n": 27,
+          "medianMs": 212.838,
+          "maxMs": 530.819
+        },
+        "queueWait": {
+          "n": 27,
+          "medianMs": 0.002,
+          "maxMs": 292.891
+        },
+        "pendingSummaries": {
+          "n": 27,
+          "medianMs": 0.1,
+          "maxMs": 0.145
+        }
+      },
+      "True": {
+        "total": {
+          "n": 21,
+          "medianMs": 913.688,
+          "maxMs": 3810.812
+        },
+        "host.readSession": {
+          "n": 21,
+          "medianMs": 913.057,
+          "maxMs": 3810.061
+        },
+        "queueWait": {
+          "n": 21,
+          "medianMs": 0.002,
+          "maxMs": 201.692
+        },
+        "pendingSummaries": {
+          "n": 21,
+          "medianMs": 0.113,
+          "maxMs": 0.623
+        }
+      }
+    },
+    "A2": {
+      "False": {
+        "total": {
+          "n": 31,
+          "medianMs": 217.386,
+          "maxMs": 595.778
+        },
+        "host.readSession": {
+          "n": 31,
+          "medianMs": 209.468,
+          "maxMs": 513.046
+        },
+        "queueWait": {
+          "n": 31,
+          "medianMs": 0.002,
+          "maxMs": 198.059
+        },
+        "pendingSummaries": {
+          "n": 31,
+          "medianMs": 0.149,
+          "maxMs": 0.674
+        }
+      },
+      "True": {
+        "total": {
+          "n": 10,
+          "medianMs": 792.946,
+          "maxMs": 1254.454
+        },
+        "host.readSession": {
+          "n": 10,
+          "medianMs": 614.15,
+          "maxMs": 936.723
+        },
+        "queueWait": {
+          "n": 10,
+          "medianMs": 0.003,
+          "maxMs": 666.409
+        },
+        "pendingSummaries": {
+          "n": 10,
+          "medianMs": 0.141,
+          "maxMs": 0.605
+        }
+      }
+    }
+  },
+  "hostRead": {
+    "False": {
+      "n": 202,
+      "medianMs": 5.451,
+      "maxMs": 136.998
+    },
+    "True": {
+      "n": 54,
+      "medianMs": 14.588,
+      "maxMs": 165.187
+    }
+  },
+  "contextIds": [
+    6
+  ],
+  "route": [
+    {
+      "i": 0,
+      "route": "direct",
+      "ms": 816.51,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 0,
+      "route": "relay",
+      "ms": 2711.04,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 1,
+      "route": "direct",
+      "ms": 779.06,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 1,
+      "route": "relay",
+      "ms": 1033.65,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 2,
+      "route": "direct",
+      "ms": 359.27,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 2,
+      "route": "relay",
+      "ms": 296.97,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 3,
+      "route": "direct",
+      "ms": 345.06,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 3,
+      "route": "relay",
+      "ms": 690.07,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 4,
+      "route": "direct",
+      "ms": 365.32,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 4,
+      "route": "relay",
+      "ms": 632.07,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 5,
+      "route": "direct",
+      "ms": 364.47,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 5,
+      "route": "relay",
+      "ms": 944.78,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 6,
+      "route": "direct",
+      "ms": 354.83,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 6,
+      "route": "relay",
+      "ms": 269.43,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 7,
+      "route": "direct",
+      "ms": 348.78,
+      "status": 200,
+      "bytes": 154
+    },
+    {
+      "i": 7,
+      "route": "relay",
+      "ms": 569.82,
+      "status": 200,
+      "bytes": 154
+    }
+  ],
+  "saveOverlap": [
+    {
+      "name": "save",
+      "at": 1792078091391,
+      "steps": [
+        {
+          "name": "queueWait",
+          "ms": 0.0035760030150413513
+        },
+        {
+          "name": "host.saveEditor",
+          "ms": 882.4567300006747
+        },
+        {
+          "name": "storeScreenshot",
+          "ms": 6785.430931996554
+        },
+        {
+          "name": "draftBatchIds",
+          "ms": 0.07532799988985062
+        },
+        {
+          "name": "persistBatch",
+          "ms": 2306.364606000483
+        },
+        {
+          "name": "stageBatch",
+          "ms": 9092.139671001583
+        }
+      ],
+      "threadId": "thr_bik69dqne3",
+      "editor": false,
+      "previewBytes": 0,
+      "bytes": 14,
+      "ms": 9974.89527399838
+    },
+    {
+      "name": "live",
+      "at": 1792078091525,
+      "steps": [
+        {
+          "name": "queueWait",
+          "ms": 749.1219049990177
+        },
+        {
+          "name": "host.readSession",
+          "ms": 199.83389699831605
+        },
+        {
+          "name": "storeScreenshot",
+          "ms": 8882.725202001631
+        },
+        {
+          "name": "draftBatchIds",
+          "ms": 0.11948300153017044
+        },
+        {
+          "name": "persistBatch",
+          "ms": 190.77200299873948
+        },
+        {
+          "name": "stageBatch",
+          "ms": 9073.57716299966
+        },
+        {
+          "name": "refreshSessionUnlocked",
+          "ms": 9273.453673001379
+        },
+        {
+          "name": "draftBatchIds",
+          "ms": 0.09054699912667274
+        },
+        {
+          "name": "loadBatch",
+          "ms": 0.053133998066186905
+        },
+        {
+          "name": "loadPendingBatches",
+          "ms": 0.6835279986262321
+        },
+        {
+          "name": "pendingSummaries",
+          "ms": 0.7231460027396679
+        }
+      ],
+      "threadId": "thr_bik69dqne3",
+      "afterRevision": 0,
+      "editor": false,
+      "revision": 1,
+      "annotations": 1,
+      "previewBytes": 0,
+      "bytes": 309684,
+      "ms": 10024.485897999257
+    },
+    {
+      "name": "live",
+      "at": 1792078093053,
+      "steps": [
+        {
+          "name": "queueWait",
+          "ms": 8494.10919399932
+        },
+        {
+          "name": "host.readSession",
+          "ms": 204.84286400303245
+        },
+        {
+          "name": "refreshSessionUnlocked",
+          "ms": 204.8720000013709
+        },
+        {
+          "name": "draftBatchIds",
+          "ms": 0.10849199816584587
+        },
+        {
+          "name": "loadBatch",
+          "ms": 0.20350800082087517
+        },
+        {
+          "name": "loadPendingBatches",
+          "ms": 0.3209279999136925
+        },
+        {
+          "name": "pendingSummaries",
+          "ms": 0.332481000572443
+        }
+      ],
+      "threadId": "thr_bik69dqne3",
+      "afterRevision": 0,
+      "editor": false,
+      "revision": 1,
+      "annotations": 1,
+      "previewBytes": 0,
+      "bytes": 309684,
+      "ms": 8700.026308998466
+    }
+  ],
+  "limits": [
+    "Cold hydration not benchmarked.",
+    "Physical uplink bandwidth not isolated.",
+    "Original502 not correlated to a matching annotate request log.",
+    "Individual storageLocation and files.write not separately timed.",
+    "afterRevision alone cannot skip editor changes: batch revision can remain unchanged."
+  ],
+  "cleanup": {
+    "testDraftDiscarded": true,
+    "activeSession": false,
+    "pendingBatches": [],
+    "originalSourceHashesVerified": true,
+    "diagnosticBundleMarkerAbsent": true,
+    "sshForwardStopped": true
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "source": "main ee8415ca0930694ce6781e64ec0cf42e8cd5358a",
+  "editorOpened": true,
+  "unsavedDraft": "UNSAVED EDIT",
+  "storedContentAtEdit": "ORIGINAL",
+  "automaticClaimWhileEditing": true,
+  "claimedContent": "ORIGINAL",
+  "saveDuringClaim": "claimed",
+  "saveAfterConsume": "not_found",
+  "editorAfterQueueRemoval": "dismissed",
+  "scope": "actual UI hook and SQLite claim/consume functions; turn completion simulated by active-to-idle DB status transition; no provider prompt sent"
+}

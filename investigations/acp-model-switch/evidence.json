@@ -1,0 +1,240 @@
+{
+  "result": "bug reproduced",
+  "cases": [
+    {
+      "interface": "session/set_config_option",
+      "rows": [
+        {
+          "label": "A",
+          "requested": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          },
+          "actual": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          }
+        },
+        {
+          "label": "B",
+          "requested": {
+            "model": "fake/b",
+            "reasoning": "high",
+            "fast": "true"
+          },
+          "actual": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          }
+        },
+        {
+          "label": "A again",
+          "requested": {
+            "model": "fake/a",
+            "reasoning": "medium",
+            "fast": "false"
+          },
+          "actual": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          }
+        },
+        {
+          "label": "same model; effort/tier changed",
+          "requested": {
+            "model": "fake/a",
+            "reasoning": "high",
+            "fast": "true"
+          },
+          "actual": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          }
+        },
+        {
+          "label": "B with env rebuild",
+          "requested": {
+            "model": "fake/b",
+            "reasoning": "high",
+            "fast": "true"
+          },
+          "actual": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          }
+        },
+        {
+          "label": "B after release/resume",
+          "requested": {
+            "model": "fake/b",
+            "reasoning": "high",
+            "fast": "true"
+          },
+          "actual": {
+            "model": "fake/b",
+            "reasoning": "high",
+            "fast": "true"
+          }
+        }
+      ],
+      "liveTrace": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "session/new"
+        },
+        {
+          "method": "session/set_config_option",
+          "configId": "model",
+          "value": "fake/a"
+        },
+        {
+          "method": "session/set_config_option",
+          "configId": "effort",
+          "value": "low"
+        },
+        {
+          "method": "session/set_config_option",
+          "configId": "fast",
+          "value": "false"
+        },
+        {
+          "method": "session/prompt"
+        },
+        {
+          "method": "session/prompt"
+        },
+        {
+          "method": "session/prompt"
+        },
+        {
+          "method": "session/prompt"
+        }
+      ]
+    },
+    {
+      "interface": "session/set_model",
+      "rows": [
+        {
+          "label": "A",
+          "requested": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          },
+          "actual": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          }
+        },
+        {
+          "label": "B",
+          "requested": {
+            "model": "fake/b",
+            "reasoning": "high",
+            "fast": "true"
+          },
+          "actual": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          }
+        },
+        {
+          "label": "A again",
+          "requested": {
+            "model": "fake/a",
+            "reasoning": "medium",
+            "fast": "false"
+          },
+          "actual": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          }
+        },
+        {
+          "label": "same model; effort/tier changed",
+          "requested": {
+            "model": "fake/a",
+            "reasoning": "high",
+            "fast": "true"
+          },
+          "actual": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          }
+        },
+        {
+          "label": "B with env rebuild",
+          "requested": {
+            "model": "fake/b",
+            "reasoning": "high",
+            "fast": "true"
+          },
+          "actual": {
+            "model": "fake/a",
+            "reasoning": "low",
+            "fast": "false"
+          }
+        },
+        {
+          "label": "B after release/resume",
+          "requested": {
+            "model": "fake/b",
+            "reasoning": "high",
+            "fast": "true"
+          },
+          "actual": {
+            "model": "fake/b",
+            "reasoning": "high",
+            "fast": "true"
+          }
+        }
+      ],
+      "liveTrace": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "session/new"
+        },
+        {
+          "method": "session/set_model",
+          "modelId": "fake/a"
+        },
+        {
+          "method": "session/set_config_option",
+          "configId": "effort",
+          "value": "low"
+        },
+        {
+          "method": "session/set_config_option",
+          "configId": "fast",
+          "value": "false"
+        },
+        {
+          "method": "session/prompt"
+        },
+        {
+          "method": "session/prompt"
+        },
+        {
+          "method": "session/prompt"
+        },
+        {
+          "method": "session/prompt"
+        }
+      ]
+    }
+  ]
+}

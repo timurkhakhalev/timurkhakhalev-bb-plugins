@@ -1,0 +1,179 @@
+{
+  "date": "2026-10-15",
+  "changes": [
+    "Serialize host save, screenshot storage, metadata storage and staged revision in the session queue.",
+    "Composer fetches pending on durable-change events, reconnect, mount and mention changes; no composer interval or live reads.",
+    "Client acknowledges an independent preview key; host omits acknowledged editor image bytes. Live annotation summaries omit thumbnails; batch/draft fetch retains them."
+  ],
+  "uiMs": {
+    "before": {
+      "open": [
+        11113,
+        3982,
+        3959
+      ],
+      "cancel": [
+        6929,
+        5685,
+        3859
+      ],
+      "save": [
+        12169
+      ]
+    },
+    "afterInstrumented": {
+      "open": [
+        5272,
+        5410,
+        5180
+      ],
+      "cancel": [
+        1894,
+        1344,
+        1702
+      ],
+      "save": [
+        4033,
+        5577
+      ]
+    },
+    "afterRelease": {
+      "open": [
+        5767
+      ],
+      "cancel": [
+        1567
+      ]
+    }
+  },
+  "acknowledgedResponses": {
+    "count": 34,
+    "bytes": [
+      1976
+    ],
+    "serverMedianMs": 216.89903850480914
+  },
+  "saveTraces": [
+    {
+      "name": "save",
+      "at": 1792079801454,
+      "steps": [
+        {
+          "name": "queueWait",
+          "ms": 0.002383999526500702
+        },
+        {
+          "name": "host.saveEditor",
+          "ms": 1164.7941389977932
+        },
+        {
+          "name": "storeScreenshot",
+          "ms": 1265.3834089934826
+        },
+        {
+          "name": "draftBatchIds",
+          "ms": 0.14985399693250656
+        },
+        {
+          "name": "persistBatch",
+          "ms": 296.0417580008507
+        },
+        {
+          "name": "stageBatch",
+          "ms": 1561.7205030024052
+        }
+      ],
+      "threadId": "thr_bik69dqne3",
+      "editor": false,
+      "previewBytes": 0,
+      "bytes": 14,
+      "ms": 2726.9020290002227
+    },
+    {
+      "name": "save",
+      "at": 1792079969568,
+      "steps": [
+        {
+          "name": "queueWait",
+          "ms": 116.57551299780607
+        },
+        {
+          "name": "host.saveEditor",
+          "ms": 1638.4718939960003
+        },
+        {
+          "name": "storeScreenshot",
+          "ms": 1430.1795799955726
+        },
+        {
+          "name": "draftBatchIds",
+          "ms": 0.0873899981379509
+        },
+        {
+          "name": "persistBatch",
+          "ms": 588.5696830004454
+        },
+        {
+          "name": "stageBatch",
+          "ms": 2018.8161029964685
+        }
+      ],
+      "threadId": "thr_bik69dqne3",
+      "editor": false,
+      "previewBytes": 0,
+      "bytes": 14,
+      "ms": 3773.983716003597
+    }
+  ],
+  "screenshotWriteCalls": 2,
+  "errors": [
+    {
+      "name": "live",
+      "at": 1792079822932,
+      "steps": [
+        {
+          "name": "queueWait",
+          "ms": 0.0014830008149147034
+        },
+        {
+          "name": "host.readSession",
+          "ms": 519.5063040032983
+        },
+        {
+          "name": "refreshSessionUnlocked",
+          "ms": 519.5198900029063
+        },
+        {
+          "name": "queueWait",
+          "ms": 0.0021540001034736633
+        },
+        {
+          "name": "host.cleanupSession",
+          "ms": 218.42304899543524
+        }
+      ],
+      "threadId": "thr_bik69dqne3",
+      "afterRevision": 1,
+      "error": "Error: Could not connect to the Browser tab",
+      "ms": 939.2880449965596
+    }
+  ],
+  "verification": {
+    "tests": 64,
+    "failed": 0,
+    "typecheck": true,
+    "build": true,
+    "savedMentionAppeared": true,
+    "mentionRemovalDiscarded": true,
+    "draftAndScreenshotRestoredAfterReload": true,
+    "releaseSourceHashesMatch": true,
+    "diagnosticCodeRemoved": true
+  },
+  "limitations": [
+    "Small sequential samples over a variable network, including native UI observation overhead.",
+    "No demonstrated improvement in first-open latency; first screenshot still travels through remote server.",
+    "One transient Could not connect to the Browser tab during diagnostic run; a later new session succeeded.",
+    "A selection immediately after start did not open the editor; a later selection succeeded.",
+    "The final host artifact is rebuilt by the server; its hash differs from the local bundle while deployed source hashes match."
+  ]
+}

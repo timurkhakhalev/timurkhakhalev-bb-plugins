@@ -1,0 +1,15 @@
+{
+  "provider": "OpenCode 1.18.34",
+  "baselineUnknownSkill": {
+    "stopReason": "end_turn",
+    "inferenceRequests": 0,
+    "assistantChunks": 0
+  },
+  "knownProviderCommand": "completed with local fixture response",
+  "fixedBridgeSkill": {
+    "inferenceRequests": 1,
+    "rewrittenInstructionReachedModel": true
+  },
+  "credentials": "synthetic only",
+  "modelBackend": "localhost fixture"
+}
