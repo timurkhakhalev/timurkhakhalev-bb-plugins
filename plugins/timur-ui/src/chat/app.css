@@ -518,7 +518,8 @@
    clipped away (it stays in the a11y tree as role="separator") and the row prints
    NEW after its label, at the label's own size. Message rows keep BB's separator.
    NEW sits outside the row's button so a long, truncating label can't clip it; the
-   button's own trailing chevron supplies the gap. */
+   button's own trailing chevron may be absent (e.g. Provisioned thread), so NEW
+   carries its own left margin. */
 :root:not([data-bui-off~="unread"]) [data-timeline-window-key^="divider:"][data-bui-unread-work] {
   height: 0;
   margin-bottom: -8px;
@@ -535,6 +536,7 @@
 :root:not([data-bui-off~="unread"]) [data-timeline-window-key^="divider:"][data-bui-unread-work] + [data-timeline-row-id] .group\/timeline-row::after {
   order: 1;
   content: "NEW";
+  margin-left: 8px;
   color: var(--success);
   font-size: 12.5px;
   font-weight: 500;
