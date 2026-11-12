@@ -1,0 +1,41 @@
+{
+  "name": "bb-plugin-codex-voice",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Voice input through the Codex ChatGPT sign-in on the machine. No Codex sign-in, no microphone.",
+  "type": "module",
+  "files": [
+    "dist",
+    "src",
+    "skills",
+    "README.md",
+    "PLUGIN_OVERVIEW.md"
+  ],
+  "scripts": {
+    "build": "bb plugin build",
+    "check": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "engines": {
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Codex Voice",
+    "description": "Voice input through the Codex ChatGPT sign-in on the machine. No Codex sign-in, no microphone.",
+    "branding": {
+      "icon": "Mic"
+    },
+    "server": "./src/server.ts",
+    "host": "./src/host.ts"
+  },
+  "dependencies": {
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@types/bun": "^1.2.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
