@@ -65,7 +65,7 @@ export default function plugin(bb: BbPluginApi) {
   }
 
   bb.experimental_aiServices.register({
-    id: "codex",
+    id: "codex-dictation",
     displayName: "Codex dictation",
     status: async (): Promise<CodexVoiceStatus> => {
       try {

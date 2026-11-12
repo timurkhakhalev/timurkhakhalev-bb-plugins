@@ -10,8 +10,8 @@ bb voice input through the Codex ChatGPT sign-in, the same `POST https://chatgpt
 
 ```sh
 bb plugin install <source> --yes
-bb settings ai-services show                        # find the service id
-bb settings ai-services set voice <id>             # explicit choice: no fallback to bb cloud
+bb settings ai-services show
+bb settings ai-services set voice codex-dictation  # explicit: no fallback to bb cloud
 ```
 
 With an explicit choice, voice input works only while Codex is available. With Automatic, bb cloud is tried first.
