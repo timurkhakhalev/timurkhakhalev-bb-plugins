@@ -42,6 +42,9 @@ function placeHost(turnId: string): HTMLElement | null {
   if (!host) {
     host = document.createElement("div");
     host.setAttribute(HOST, "");
+    // bb 0.50+ scopes plugin Tailwind utilities to [data-bb-plugin=<id>]; this host
+    // sits in bb's timeline, so mark it or `size-3.5` and friends stop applying.
+    host.dataset.bbPlugin = "timur-ui";
     text.after(host);
   }
   return host;

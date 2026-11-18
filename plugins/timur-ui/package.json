@@ -26,8 +26,8 @@
     "test": "node --experimental-strip-types --test src/chat/*.test.ts"
   },
   "engines": {
-    "bb": ">=0.47",
-    "bbPluginSdk": ">=0.6.60"
+    "bb": ">=0.50",
+    "bbPluginSdk": ">=0.6.157"
   },
   "bb": {
     "name": "Timur UI",
@@ -42,7 +42,7 @@
     "zod": "^4.1.0"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.132",
+    "@get-bb/plugin-sdk": "0.6.157",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

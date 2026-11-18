@@ -8,7 +8,7 @@
         "zod": "^4.1.0",
       },
       "devDependencies": {
-        "@get-bb/plugin-sdk": "0.6.132",
+        "@get-bb/plugin-sdk": "0.6.157",
         "@types/node": "^22.0.0",
         "@types/react": "^19.0.0",
         "@types/react-dom": "^19.0.0",
@@ -17,7 +17,7 @@
     },
   },
   "packages": {
-    "@get-bb/plugin-sdk": ["@get-bb/plugin-sdk@0.6.132", "", { "dependencies": { "@tanstack/react-query": "^5.106.1", "cross-spawn": "^7.0.6", "zod": "^4.6.7" }, "peerDependencies": { "@testing-library/react": "^16.3.2", "@types/better-sqlite3": "^7.6.12", "@types/react": "^19.0.0", "better-sqlite3": ">=12", "cron-parser": "^5.5.0", "hono": "^4.11.9", "react": "^19.0.0", "react-dom": "^19.0.0" }, "optionalPeers": ["@testing-library/react", "@types/better-sqlite3", "@types/react", "better-sqlite3", "cron-parser", "hono", "react", "react-dom"] }, "sha512-gxRXAikswX3+gKcLODVz8uIl8fPU2M5KYApZOjZ6VX38o3nmP0Iv27FJE7AGybvK6DQSc9USBYmXIVBaEEIgcw=="],
+    "@get-bb/plugin-sdk": ["@get-bb/plugin-sdk@0.6.157", "", { "dependencies": { "@tanstack/react-query": "^5.106.1", "cross-spawn": "^7.0.6", "zod": "^4.6.7" }, "peerDependencies": { "@testing-library/react": "^16.3.2", "@types/better-sqlite3": "^7.6.12", "@types/react": "^19.0.0", "better-sqlite3": ">=12", "cron-parser": "^5.5.0", "hono": "^4.11.9", "react": "^19.0.0", "react-dom": "^19.0.0" }, "optionalPeers": ["@testing-library/react", "@types/better-sqlite3", "@types/react", "better-sqlite3", "cron-parser", "hono", "react", "react-dom"] }, "sha512-DMtkp91MKErg0qMIX8BRVj7XX2JbjAIFj6Wx5GgZOkpOPu2VA0ZEYO0pP2vc3UtQY0yRFC/odGgbDBVaoyCgtQ=="],
 
     "@tanstack/query-core": ["@tanstack/query-core@5.107.0", "", {}, "sha512-QrobCJilIr2futzukm0E9w/j7fEGweTNZL0cBJDTV0ek1PeNE32XqzQHUxqKc6grb9OxUZt6tz27lgu5fchK0w=="],
 
