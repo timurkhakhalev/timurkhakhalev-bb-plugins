@@ -41,6 +41,7 @@ Chat look (from Beautiful Chat):
 | `unreadMarker` | boolean | `true` | `NEW` on the first unread work row instead of BB's separator. |
 | `messageActions` | boolean | `true` | Hover chips and one shared gliding tooltip on rows of 3+ icon buttons. |
 | `turnChanges` | boolean | `true` | Under the latest response, the files its turn edited with line counts. |
+| `typeToCompose` | boolean | `true` | Printable keys pressed while nothing editable has focus go into the composer (the one in the pane last clicked) and focus it. Keys with ⌘, Ctrl or ⌥, special keys, IME input, open menus/dialogs and focused fields are left alone. |
 | `runStrip` | boolean | `true` | Row under the thread header: to-do segments with the current item (click for the list), context meter from 70% full with cost, chip when the model fell back. Hidden when there is nothing to show. Needs bb 0.50+. |
 
 Constraints:

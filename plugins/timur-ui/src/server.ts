@@ -35,6 +35,12 @@ export default async function plugin(bb: BbPluginApi) {
         "On touch devices, don't collapse a composer with a draft when the keyboard's Done button closes the keyboard.",
       default: true,
     },
+    typeToCompose: {
+      type: "boolean",
+      label: "Type to compose",
+      description: "Typing while nothing editable has focus starts the message in the composer, no ⌘⇧C needed. Shortcuts with ⌘, Ctrl or ⌥ are left alone.",
+      default: true,
+    },
     hideGitBar: {
       type: "boolean",
       label: "Hide the git changes bar",

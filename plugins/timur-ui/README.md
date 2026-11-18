@@ -15,6 +15,7 @@ Makes the BB thread composer shorter, so more of the chat stays on screen.
 - **Mobile drawer animation.** BB's bottom drawers (model picker, environment, branch) slide up on every open, except the first one after a page load, which appears instantly. The plugin gives that first open a starting position, so it slides up too. Off with `animateCollapse=false` or `prefers-reduced-motion`.
 - **Reasoning slider.** The model menu uses a stepped slider with dots and the selected level beside the Reasoning heading. Default and None, when available, are separate buttons to its left; selecting either leaves the scale unfilled. Drag or use arrow keys; available levels and saving come from BB's own controls. Movement takes 180 ms and respects reduced motion. Uses the current BB theme on desktop and touch screens.
 - **Draft stays open after the keyboard closes (touch devices).** BB collapses the composer when the keyboard's Done button closes the keyboard, squeezing a typed draft into a one-line pill. With a draft, the composer now stays open; tapping outside it, or closing the keyboard on an empty composer, still collapses it.
+- **Type to compose.** Start typing anywhere and the text goes into the composer, no ⌘⇧C first (as in Codex). Only when nothing editable has focus; keys with ⌘, Ctrl or ⌥, Enter/Tab/arrows, IME input and open menus or dialogs are left alone. With split panes it picks the composer of the pane you last clicked.
 - **Optional:** hide the git changes bar (`Untracked · N files, +X -Y`) above the composer.
 
 - **New-thread composer.** Its picker row (project, environment or machine, branch, permissions) moves into the action row the same way. All pickers stay visible as chips; when space runs out, only the environment label truncates. On phones the row stays under the composer, but the branch shows as an icon and the project name truncates, so nothing overlaps the agent-mode button.
@@ -40,6 +41,7 @@ bb plugin config timur-ui set editorMaxLines 10
 | `inlineFooter` | `true` | Footer in the action row with the branch chip. `false` keeps BB's own row. |
 | `animateCollapse` | `true` | Animate collapse and expand. |
 | `keepExpandedAfterKeyboard` | `true` | On touch devices, keep a composer with a draft open when the keyboard's Done button closes the keyboard. |
+| `typeToCompose` | `true` | Typing with nothing focused goes into the composer. |
 | `hideGitBar` | `true` | Hide the git changes bar above the thread composer. |
 | `loader` | `drive` | Pending-row loader: `drive`, `dots`, `orbit`, `coins`, or `bb` (BB's own). |
 | `toolChips` | `surface` | Tool call rows: `surface`, `outline`, or `plain`. |
@@ -62,6 +64,7 @@ Chat look (`src/chat/`), kept close to upstream so changes can be pulled in:
 - `app.css`: Beautiful Chat's stylesheet minus the composer sections. Every rule is gated by a `data-bui-off` token or a `data-bui-loader`/`data-bui-chips` value. The drive/dots/orbit/coins loaders and the label shimmer use looping APNG masks (like BB's own shine) to avoid per-frame CSS animation work. `scripts/loader-apng.py` regenerates them; `python3 scripts/check-loader-apng.py` checks the embedded masks, frame timing, and reduced-motion stills (requires Pillow). Native BB measurements are in [docs/performance-2026-10-29.md](docs/performance-2026-10-29.md).
 - `settings.ts`: setting values → those attributes. `perf-markers.ts`: stamps `data-bui-*` markers so the CSS avoids broad `:has()`. `phase-sync.ts`, `spatial-tooltip.ts`: loop sync for BB's remaining CSS loops, shared tooltip.
 - `changed-files.tsx`, `turn-changes*.ts`, `rpc.ts`: the changed-files list and the server RPC that reads the turn's `fileChange` events.
+- `composer/type-to-compose*.ts(x)`: typing with nothing focused goes into the composer; a bare composer banner registers each composer, one document keydown listener picks the target.
 - `run-strip.tsx`, `run-strip-model.ts`: the row under the thread header (`experimental_threadHeaderRow`), fed by `threads.experimental_headState` and refetched on relevant `thread:changed` events.
 
 `src/server.ts` declares the settings and registers the changed-files RPC.

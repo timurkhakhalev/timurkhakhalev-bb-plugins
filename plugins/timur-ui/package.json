@@ -23,7 +23,7 @@
   "scripts": {
     "build": "bb plugin build",
     "check": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/chat/*.test.ts"
+    "test": "node --experimental-strip-types --test src/chat/*.test.ts src/composer/*.test.ts"
   },
   "engines": {
     "bb": ">=0.50",

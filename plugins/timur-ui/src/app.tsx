@@ -18,6 +18,7 @@ import { mountPhaseSync } from "./chat/phase-sync";
 import { mountPerfMarkers } from "./chat/perf-markers";
 import { ChangedFiles } from "./chat/changed-files";
 import { RunStrip } from "./chat/run-strip";
+import { TypeToCompose } from "./composer/type-to-compose";
 
 const ATTR_FOOTER_BELOW = "data-cc-footer-below";
 const ATTR_SHOW_GIT_BAR = "data-cc-show-git-bar";
@@ -96,6 +97,11 @@ export default definePluginApp((app) => {
   });
   app.slots.experimental_appOverlay({ id: "settings", component: SettingsBridge });
   app.slots.experimental_threadHeaderRow({ id: "run-strip", order: 0, component: RunStrip });
+  app.composer.customize({
+    id: "type-to-compose",
+    scopes: ["thread", "new-thread"],
+    banners: [{ id: "type-to-compose", chrome: "bare", component: TypeToCompose }],
+  });
   app.composer.customize({
     id: "turn-changes",
     scopes: ["thread"],
