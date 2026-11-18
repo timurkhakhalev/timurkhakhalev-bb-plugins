@@ -1,6 +1,6 @@
 ---
 name: timur-ui
-description: Change how the Timur UI plugin styles BB: the composer (prompt height, footer placement, collapse animation, keeping a draft open after the mobile keyboard closes, git changes bar) and the chat look taken from Beautiful Chat (loaders, tool rows, message bubbles, code chips, approval cards, tree lines, changed-files list) through its plugin settings.
+description: Change how the Timur UI plugin styles BB: the composer (prompt height, footer placement, collapse animation, keeping a draft open after the mobile keyboard closes, git changes bar) and the chat look taken from Beautiful Chat (loaders, tool rows, message bubbles, code chips, approval cards, tree lines, changed-files list) and the run strip under the thread header (to-do progress, context meter, model fallback) through its plugin settings.
 ---
 
 # Timur UI settings
@@ -41,6 +41,7 @@ Chat look (from Beautiful Chat):
 | `unreadMarker` | boolean | `true` | `NEW` on the first unread work row instead of BB's separator. |
 | `messageActions` | boolean | `true` | Hover chips and one shared gliding tooltip on rows of 3+ icon buttons. |
 | `turnChanges` | boolean | `true` | Under the latest response, the files its turn edited with line counts. |
+| `runStrip` | boolean | `true` | Row under the thread header: to-do segments with the current item (click for the list), context meter from 70% full with cost, chip when the model fell back. Hidden when there is nothing to show. Needs bb 0.50+. |
 
 Constraints:
 

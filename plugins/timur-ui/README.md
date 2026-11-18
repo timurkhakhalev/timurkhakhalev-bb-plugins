@@ -43,7 +43,7 @@ bb plugin config timur-ui set editorMaxLines 10
 | `hideGitBar` | `true` | Hide the git changes bar above the thread composer. |
 | `loader` | `drive` | Pending-row loader: `drive`, `dots`, `orbit`, `coins`, or `bb` (BB's own). |
 | `toolChips` | `surface` | Tool call rows: `surface`, `outline`, or `plain`. |
-| `shimmer`, `workRows`, `streamingCaret`, `approvalCard`, `userBubbles`, `codeChips`, `selectionPill`, `treeLines`, `mergedBanners`, `unreadMarker`, `messageActions`, `turnChanges` | `true` | Beautiful Chat's on/off switches; see `src/server.ts` for what each one does. |
+| `shimmer`, `workRows`, `streamingCaret`, `approvalCard`, `userBubbles`, `codeChips`, `selectionPill`, `treeLines`, `mergedBanners`, `unreadMarker`, `messageActions`, `turnChanges`, `runStrip` | `true` | Beautiful Chat's on/off switches; see `src/server.ts` for what each one does. |
 
 Changes apply immediately; no reload needed.
 
@@ -62,6 +62,7 @@ Chat look (`src/chat/`), kept close to upstream so changes can be pulled in:
 - `app.css`: Beautiful Chat's stylesheet minus the composer sections. Every rule is gated by a `data-bui-off` token or a `data-bui-loader`/`data-bui-chips` value. The drive/dots/orbit/coins loaders and the label shimmer use looping APNG masks (like BB's own shine) to avoid per-frame CSS animation work. `scripts/loader-apng.py` regenerates them; `python3 scripts/check-loader-apng.py` checks the embedded masks, frame timing, and reduced-motion stills (requires Pillow). Native BB measurements are in [docs/performance-2026-10-29.md](docs/performance-2026-10-29.md).
 - `settings.ts`: setting values → those attributes. `perf-markers.ts`: stamps `data-bui-*` markers so the CSS avoids broad `:has()`. `phase-sync.ts`, `spatial-tooltip.ts`: loop sync for BB's remaining CSS loops, shared tooltip.
 - `changed-files.tsx`, `turn-changes*.ts`, `rpc.ts`: the changed-files list and the server RPC that reads the turn's `fileChange` events.
+- `run-strip.tsx`, `run-strip-model.ts`: the row under the thread header (`experimental_threadHeaderRow`), fed by `threads.experimental_headState` and refetched on relevant `thread:changed` events.
 
 `src/server.ts` declares the settings and registers the changed-files RPC.
 

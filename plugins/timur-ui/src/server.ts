@@ -127,5 +127,11 @@ export default async function plugin(bb: BbPluginApi) {
       description: "Under the latest response, the files its turn edited with line counts: three at first, the rest on expand. Click one to open it.",
       default: true,
     },
+    runStrip: {
+      type: "boolean",
+      label: "Run strip under the thread header",
+      description: "A slim row under the header with the agent's to-do progress, a context meter once the window is 70% full, and a chip when the model fell back.",
+      default: true,
+    },
   });
 }
